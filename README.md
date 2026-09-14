@@ -15,6 +15,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="#how-is-this-different-from-goal">vs /goal</a> ·
   <a href="#computers-vps-and-multiple-servers">Multiple hosts</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#commands">Commands</a> ·
@@ -140,6 +141,25 @@ claude-pilot status my-app
 
 > [!NOTE]
 > Headless turns default to `permission_mode: "bypassPermissions"`, which bypasses Claude Code permission prompts. Set the mode deliberately before running a pilot. Goals and `CLAUDE.md` guide the model; they are not an execution sandbox. Other permission modes can leave unattended work waiting for approval.
+
+## How is this different from `/goal`?
+
+Claude Code ships `/goal <condition>`: after every turn a small model judges whether the condition holds and, if not, the session takes another turn. It is the right tool when you are still at the keyboard, and it needs no setup. `claude-pilot` solves a different problem: the work has to continue after the session, the terminal and possibly the machine you typed on are gone.
+
+| | `/goal` (built in) | `claude-pilot` |
+| --- | --- | --- |
+| Where the loop runs | Inside the live session process | Outside it: a scheduler resumes the session headlessly |
+| Survives closing the terminal | Only while the session process is alive | Yes; the session is resumed by id from its transcript |
+| Runs on a server with nobody logged in | No | Yes, from systemd or cron, on one host or many |
+| Judges whether the goal is met | Yes, an evaluator model after every turn | No; the session reports `PILOT-DONE`, you or your own supervisor verify |
+| Bounds | A clause in the condition, e.g. "or stop after 20 turns" | Ticks and hours, enforced outside the model, plus a concurrency cap |
+| Steering mid-run | Type in the session | `claude-pilot tell` from any shell or script, delivered on the next resume |
+| Context growth | Auto-compaction inside the session | Handoff to a fresh session with a written summary once the transcript is large |
+| Waking on events | Turn-driven | Stop hook wakes it instantly; a timer covers everything else |
+| Notifications | On screen | Any command: chat bot, mail, webhook |
+| Setup | None | A hook, three units, a config file |
+
+They compose. Start a pilot around a session that also carries a `/goal`: the built-in evaluator drives the turns while you are present, and the pilot takes over when the session goes quiet or ends. The pilot's own check is deliberately dumb: it trusts the reply markers and leaves judgement to you or to whatever supervisor you plug in through `notify_command` and the state files.
 
 ## Computers, VPS, and multiple servers
 

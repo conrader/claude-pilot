@@ -25,6 +25,8 @@
 
 Give an existing session a clear goal. `claude-pilot` resumes it when it goes quiet, delivers instructions you queue along the way, and attempts a handoff to a fresh session when the transcript grows large. It records when the session reports completion, needs your help, or reaches its configured bounds.
 
+It is built for more than one session at a time. One hook receiver and one tick loop drive a registry of pilots, each with its own goal, inbox, bounds and history, under a concurrency cap. Everything the loop knows is a JSON file, so an external orchestrator, your own scripts or a second brain can read every pilot's state and steer each one separately.
+
 One Python package. Standard library only. A Claude Code `Stop` hook for prompt wakeups, with a systemd timer as a fallback.
 
 Run it on your Linux computer, a VPS, or several servers. Install a pilot on each host and control them through SSH or your own orchestration layer.
@@ -149,6 +151,8 @@ Claude Code ships `/goal <condition>`: after every turn a small model judges whe
 | | `/goal` (built in) | `claude-pilot` |
 | --- | --- | --- |
 | Where the loop runs | Inside the live session process | Outside it: a scheduler resumes the session headlessly |
+| Sessions at once | One, the one you are in | Many: a registry of pilots with a cap, one inbox each, one status view, one hook receiver |
+| An external orchestrator can drive it | No | Yes: state files, `tell`, `status`, `stop` per pilot, from scripts or other hosts |
 | Survives closing the terminal | Only while the session process is alive | Yes; the session is resumed by id from its transcript |
 | Runs on a server with nobody logged in | No | Yes, from systemd or cron, on one host or many |
 | Judges whether the goal is met | Yes, an evaluator model after every turn | No; the session reports `PILOT-DONE`, you or your own supervisor verify |
@@ -158,6 +162,8 @@ Claude Code ships `/goal <condition>`: after every turn a small model judges whe
 | Waking on events | Turn-driven | Stop hook wakes it instantly; a timer covers everything else |
 | Notifications | On screen | Any command: chat bot, mail, webhook |
 | Setup | None | A hook, three units, a config file |
+
+The difference shows when there are several sessions: three repositories with three goals, one of them blocked on you, one idle, one chewing through a migration. `/goal` is a property of one conversation. A pilot registry is a fleet view of all of them, and every entry can be steered without opening it.
 
 They compose. Start a pilot around a session that also carries a `/goal`: the built-in evaluator drives the turns while you are present, and the pilot takes over when the session goes quiet or ends. The pilot's own check is deliberately dumb: it trusts the reply markers and leaves judgement to you or to whatever supervisor you plug in through `notify_command` and the state files.
 

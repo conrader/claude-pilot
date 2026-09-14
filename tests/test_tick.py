@@ -217,6 +217,106 @@ def test_failed_resume_with_queued_inbox_puts_instructions_back(env, tmp_path, m
     assert len(registry.inbox_pending("p8")) == 1
 
 
+class _FakeAgent:
+    """A minimal fake `agents` module the tests can drive precisely."""
+
+    def __init__(self, mtime=None, ok=True, reply="fine"):
+        self.mtime = mtime
+        self.ok = ok
+        self.reply = reply
+        self.resume_calls = 0
+
+    def for_record(self, rec):
+        return self
+
+    def newest_transcript_mtime(self, cwd, session_id, host):
+        return self.mtime
+
+    def transcript_is_gone(self, cwd, session_id, host):
+        return False
+
+    def newest_session(self, cwd, host):
+        return None
+
+    def resume(self, rec, prompt, settings):
+        self.resume_calls += 1
+        self.last_prompt = prompt
+        return self.ok, self.reply
+
+    def estimate_tokens(self, cwd, session_id, host):
+        return 0
+
+
+def test_remote_record_skips_interactive_guard(env, tmp_path, monkeypatch):
+    cwd = _make_project(tmp_path, "premote")
+    fake = _FakeAgent(mtime=None, ok=True, reply="done here")
+    monkeypatch.setattr(tick_mod, "agents", fake)
+    monkeypatch.setattr(tick_mod.driver, "resume", fake.resume)
+    monkeypatch.setattr(
+        tick_mod.sessions, "interactive_agent_pid", lambda cwd_: 12345
+    )
+    rec = _base_rec("premote", cwd, "sess-r", host="box1", agent="claude")
+    registry.save(rec)
+
+    tick_mod.tick(_settings("claude"))
+    assert fake.resume_calls == 1
+    _, saved = registry.load("premote")
+    assert saved["ticks"] == 1
+
+
+def test_local_record_still_honours_interactive_guard(env, tmp_path, monkeypatch):
+    cwd = _make_project(tmp_path, "plocal")
+    fake = _FakeAgent(mtime=None, ok=True, reply="done here")
+    monkeypatch.setattr(tick_mod, "agents", fake)
+    monkeypatch.setattr(tick_mod.driver, "resume", fake.resume)
+    monkeypatch.setattr(
+        tick_mod.sessions, "interactive_agent_pid", lambda cwd_: 12345
+    )
+    rec = _base_rec("plocal", cwd, "sess-l")
+    registry.save(rec)
+
+    tick_mod.tick(_settings("claude"))
+    assert fake.resume_calls == 0
+
+
+def test_context_command_text_lands_in_the_instruction(env, tmp_path, monkeypatch):
+    cwd = _make_project(tmp_path, "pctx")
+    fake = _FakeAgent(mtime=None, ok=True, reply="ok")
+    monkeypatch.setattr(tick_mod, "agents", fake)
+    monkeypatch.setattr(tick_mod.driver, "resume", fake.resume)
+    ctx_script = tmp_path / "ctx.sh"
+    ctx_script.write_text("#!/bin/sh\ncat >/dev/null\necho 'a red alert from the ledger'\n")
+    ctx_script.chmod(0o755)
+    rec = _base_rec("pctx", cwd, "sess-c")
+    registry.save(rec)
+
+    tick_mod.tick(_settings("claude", context_command=str(ctx_script)))
+    assert "a red alert from the ledger" in fake.last_prompt
+    assert "Context from your operator's system:" in fake.last_prompt
+
+
+def test_judge_pause_stops_further_resumes(env, tmp_path, monkeypatch):
+    cwd = _make_project(tmp_path, "pjudge")
+    fake = _FakeAgent(mtime=None, ok=True, reply="ok")
+    monkeypatch.setattr(tick_mod, "agents", fake)
+    monkeypatch.setattr(tick_mod.driver, "resume", fake.resume)
+    judge_script = tmp_path / "judge.sh"
+    judge_script.write_text(
+        "#!/bin/sh\ncat >/dev/null\necho '{\"verdict\": \"pause\", \"reason\": \"off track\"}'\n"
+    )
+    judge_script.chmod(0o755)
+    rec = _base_rec("pjudge", cwd, "sess-j")
+    registry.save(rec)
+
+    tick_mod.tick(_settings("claude", judge_command=str(judge_script)))
+    _, saved = registry.load("pjudge")
+    assert saved["state"] == "paused"
+    assert saved["paused_reason"] == "off track"
+
+    tick_mod.tick(_settings("claude", judge_command=str(judge_script)))
+    assert fake.resume_calls == 1  # a paused pilot is not active, no second turn
+
+
 def test_tick_lock_skips_concurrent_tick(env, tmp_path):
     import fcntl
     config.TICK_LOCK.parent.mkdir(parents=True, exist_ok=True)

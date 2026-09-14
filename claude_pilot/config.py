@@ -24,6 +24,21 @@ _DEFAULTS = {
     "notify_command": "",
     "hookd_port": 8910,
     "hookd_token_file": "~/.config/claude-pilot/hookd.token",
+    "codex_command": "codex",
+    "codex_sandbox": "",
+    "context_command": "",
+    "judge_command": "",
+    "hosts": {},
+    "ssh_command": "ssh",
+}
+
+_HOST_DEFAULTS = {
+    "ssh": "",
+    "key": "",
+    "claude": "claude",
+    "codex": "codex",
+    "python": "python3",
+    "connect_timeout": 10,
 }
 
 
@@ -93,4 +108,22 @@ def settings() -> dict:
             else:
                 out[key] = raw
 
+    return out
+
+
+def host_config(name: str, settings_dict: dict | None = None) -> dict:
+    """Effective config for a named remote host, defaults filled in.
+
+    Raises KeyError with a clear message if `name` is not a key of the
+    "hosts" setting. Reads the global settings() unless `settings_dict` is
+    given (callers that already hold an explicit settings dict, such as
+    transport.run, pass it through instead of reloading from disk/env).
+    """
+    hosts = (settings_dict if settings_dict is not None else settings()).get("hosts") or {}
+    if name not in hosts:
+        raise KeyError(f"no such host configured: {name!r}")
+    out = dict(_HOST_DEFAULTS)
+    raw = hosts[name] or {}
+    if isinstance(raw, dict):
+        out.update(raw)
     return out

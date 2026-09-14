@@ -17,6 +17,8 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#how-is-this-different-from-goal">vs /goal</a> ·
   <a href="#computers-vps-and-multiple-servers">Multiple hosts</a> ·
+  <a href="#codex-sessions">Codex</a> ·
+  <a href="#plugging-in-your-own-second-brain">Your second brain</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#commands">Commands</a> ·
   <a href="#configuration">Configuration</a> ·
@@ -29,7 +31,7 @@ It is built for more than one session at a time. One hook receiver and one tick 
 
 One Python package. Standard library only. A Claude Code `Stop` hook for prompt wakeups, with a systemd timer as a fallback.
 
-Run it on your Linux computer, a VPS, or several servers. Install a pilot on each host and control them through SSH or your own orchestration layer.
+Run it on your Linux computer, a VPS, or several servers: one controller drives Claude Code and Codex sessions on any number of hosts over SSH.
 
 ## Why use it?
 
@@ -155,7 +157,8 @@ Claude Code ships `/goal <condition>`: after every turn a small model judges whe
 | An external orchestrator can drive it | No | Yes: state files, `tell`, `status`, `stop` per pilot, from scripts or other hosts |
 | Survives closing the terminal | Only while the session process is alive | Yes; the session is resumed by id from its transcript |
 | Runs on a server with nobody logged in | No | Yes, from systemd or cron, on one host or many |
-| Judges whether the goal is met | Yes, an evaluator model after every turn | No; the session reports `PILOT-DONE`, you or your own supervisor verify |
+| Judges whether the goal is met | Yes, an evaluator model after every turn | Not by itself; the session reports `PILOT-DONE`, and `judge_command` lets your own supervisor pause it |
+| Agents | Claude Code | Claude Code and Codex, in one registry |
 | Bounds | A clause in the condition, e.g. "or stop after 20 turns" | Ticks and hours, enforced outside the model, plus a concurrency cap |
 | Steering mid-run | Type in the session | `claude-pilot tell` from any shell or script, delivered on the next resume |
 | Context growth | Auto-compaction inside the session | Handoff to a fresh session with a written summary once the transcript is large |
@@ -169,22 +172,61 @@ They compose. Start a pilot around a session that also carries a `/goal`: the bu
 
 ## Computers, VPS, and multiple servers
 
-The same setup works on a Linux workstation, an always-on VPS, or several servers with different projects. Install and authenticate Claude Code on each execution host, then install `claude-pilot` there. Each host owns its sessions, transcripts, registry, and scheduler.
+One `claude-pilot` installation can drive sessions on several machines. The host running the loop (the *controller*) keeps the registry, the scheduler and the hook receiver; each *execution host* runs its own Claude Code or Codex sessions on its own checkout. The controller reaches them over SSH: it lists transcripts, measures liveness and resumes turns remotely, and the execution hosts report their Stop events back to the controller's hook receiver.
 
 <p align="center">
-  <img src="docs/assets/deployment.svg" alt="Multiple-host deployment: use SSH or an external orchestrator to manage independent pilots on a Linux computer, VPS, and build server. Each host runs local Claude sessions with its own state." width="100%">
+  <img src="docs/assets/deployment.svg" alt="Multiple-host deployment: a controller drives independent Claude and Codex sessions on a Linux computer, a VPS and a build server over SSH, while each host keeps its own checkout and authentication." width="100%">
 </p>
 
-From one terminal, you can steer work on different machines:
+Declare the hosts once, in the controller's config:
 
-```bash
-# Example SSH hosts and install paths; replace with your own.
-ssh dev-vps '~/tools/claude-pilot/.venv/bin/claude-pilot status'
-ssh build-server '~/tools/claude-pilot/.venv/bin/claude-pilot tell my-app "Run the export tests next."'
-ssh dev-vps '~/tools/claude-pilot/.venv/bin/claude-pilot stop my-app'
+```json
+{
+  "hosts": {
+    "dev-vps":      { "ssh": "me@dev-vps",      "key": "~/.ssh/pilot_ed25519" },
+    "build-server": { "ssh": "me@build-server", "key": "~/.ssh/pilot_ed25519", "claude": "/opt/claude/bin/claude" }
+  }
+}
 ```
 
-This is a deployment pattern built from **one installation per host** and an external control layer such as SSH. The current package does not provide a built-in fleet scheduler, shared cross-host registry, or automatic migration of a running session between machines. Its context handoffs start a fresh session on the same host. Use your existing repository workflow to move code between hosts.
+Then enrol a session where it lives and steer it from where you sit:
+
+```bash
+claude-pilot hosts                                   # reachability and the agent binaries found on each host
+claude-pilot start "Migrate the schema, keep the tests green." --host dev-vps --name migration
+claude-pilot start "Fix the flaky build." --host build-server --agent codex --name build
+claude-pilot tell migration "Skip the audit table for now."
+claude-pilot status
+```
+
+What each side needs:
+
+| On the controller | On every execution host |
+| --- | --- |
+| The config above and a private key the hosts accept | `claude` or `codex` installed and authenticated **non-interactively**: file-based credentials work; a macOS keychain is locked inside an SSH session and will answer "Not logged in" |
+| The hook receiver reachable from the hosts, with a token file (see below) | The Stop hook from [settings-hooks-remote.json](contrib/claude-code/settings-hooks-remote.json), which adds `X-Pilot-Host` and the token to the same curl |
+| `python3` on the hosts, used for transcript scans | The project checkout, and at least one recorded session in it |
+
+Off-loopback hook delivery is what the token file is for: put the same secret in `~/.config/claude-pilot/hookd.token` on the controller and on each host, and the receiver binds all interfaces and checks `X-Pilot-Token`. Without the file it listens on loopback only. The Stop hook of a remote session wakes the controller exactly like a local one; a remote Codex session asks the controller for its continuation decision over SSH (see [Codex](#codex-sessions)).
+
+What stays out of scope: moving a running session between machines (handoffs start the fresh session on the same host) and a shared registry across several controllers. One controller, many hosts.
+
+## Codex sessions
+
+Pilots can drive [Codex](https://github.com/openai/codex) sessions as well as Claude Code ones, side by side in the same registry: `--agent codex`. Codex has no `-r` to resume a conversation headlessly, so the loop uses Codex's own Stop hook. Install [contrib/codex](contrib/codex/) on the host that runs Codex: its `hooks.json` registers the hook, and the hook script reports every session event to the receiver and, at each turn boundary, asks `claude-pilot codex-stop` whether to continue. The answer is either `{}` (let the turn end: goal reported done, blocked, budget or deadline reached, paused by your judge) or a `block` decision carrying the next instruction, which is how a Codex hook tells the model to keep going. The tick loop still watches Codex pilots: if the hook chain goes idle, it continues the session with `codex exec resume`, gated by the rollout file's age so it never races a live turn.
+
+Claude and Codex pilots share everything else: bounds, inbox, `tell`, `status`, notifications, the judge and the context connector. What Codex pilots do not get is a transcript-size handoff; Codex manages its own context.
+
+## Plugging in your own second brain
+
+The registry is a directory of JSON files and every command is scriptable, so an external system can already watch and steer pilots. Two optional settings let it reach *into* the loop:
+
+| Setting | When it runs | Contract |
+| --- | --- | --- |
+| `context_command` | before every resume | The pilot record as JSON on stdin. Whatever it prints is appended to the instruction under "Context from your operator's system". Project notes, guardrails, the last review, a memory lookup: one command, your choice. |
+| `judge_command` | after every turn | `{"record": …, "reply": …}` on stdin. Print `{"verdict": "ok"}` to continue or `{"verdict": "pause", "reason": "…"}` to park the pilot in `paused` with that reason until you `revive` it. |
+
+Both are time-boxed to 30 seconds and can never break a tick: a failing or malformed command counts as "no context" and "ok", and is logged. This is the seam where a supervisor that reads transcripts, checks the diff against the goal, or consults a knowledge base belongs; the loop itself stays deliberately dumb.
 
 ## How it works
 
@@ -258,7 +300,7 @@ Notifications go to stdout and, when configured, your `notify_command`. Identica
 
 | Command | What it does |
 | --- | --- |
-| `claude-pilot start "<goal>"` | Enroll the newest transcript in the current project. Supports `--name`, `--cwd`, `--session-id`, `--ticks`, `--hours`, `--persistent`, `--force`, and `--allow-more`. |
+| `claude-pilot start "<goal>"` | Enroll the newest transcript in the current project. Supports `--name`, `--cwd`, `--session-id`, `--ticks`, `--hours`, `--persistent`, `--force`, `--allow-more`, `--agent {claude,codex}` and `--host NAME`. |
 | `claude-pilot tick` | Run one pass over enrolled pilots. |
 | `claude-pilot status [name]` | Show state, tick count, deadline, goal, and the latest recorded reply. |
 | `claude-pilot tell <name> "<text>"` | Queue an instruction and create a wake marker. |
@@ -267,6 +309,8 @@ Notifications go to stdout and, when configured, your `notify_command`. Identica
 | `claude-pilot stop <name>` | Mark a pilot stopped to prevent future resumes. |
 | `claude-pilot revive <name>` | Reactivate an existing pilot; extend an elapsed deadline; reset the tick budget if it was exhausted. Supports `--hours`, `--persistent`, `--force`, and `--allow-more`. |
 | `claude-pilot hookd` | Run the hook receiver in the foreground; supports `--port` and `--bind`. |
+| `claude-pilot hosts` | Check every configured execution host: reachable, and which agent binaries it has. |
+| `claude-pilot codex-stop` | The Codex Stop-hook controller; reads the hook payload on stdin, prints the decision. Wired by [contrib/codex](contrib/codex/). |
 | `claude-pilot install-units [--write]` | Print the systemd units, or install them. |
 
 Inside Claude Code, use `/pilot <goal>`, `/pilot status`, or `/pilot stop`.
@@ -305,6 +349,12 @@ Create `~/.config/claude-pilot/config.json`. Every key is optional; environment 
   "compact_tokens": 150000,
   "resume_timeout_s": 3600,
   "notify_command": "",
+  "context_command": "",
+  "judge_command": "",
+  "codex_command": "codex",
+  "codex_sandbox": "",
+  "ssh_command": "ssh",
+  "hosts": {},
   "hookd_port": 8910,
   "hookd_token_file": "~/.config/claude-pilot/hookd.token"
 }
@@ -320,6 +370,9 @@ Create `~/.config/claude-pilot/config.json`. Every key is optional; environment 
 | `default_ticks` / `default_hours` / `cap` | Set default enrollment bounds and the active-pilot cap. |
 | `compact_tokens` / `resume_timeout_s` | Set the handoff threshold and per-invocation timeout. |
 | `notify_command` | Run your notification command with the message on stdin. |
+| `context_command` / `judge_command` | Feed context into every resume and judge every turn; see [second brain](#plugging-in-your-own-second-brain). |
+| `codex_command` / `codex_sandbox` | The Codex binary and an optional `sandbox_mode` for `codex exec`. |
+| `hosts` / `ssh_command` | Execution hosts reachable over SSH; see [multiple servers](#computers-vps-and-multiple-servers). |
 | `hookd_port` / `hookd_token_file` | Configure the receiver port and optional off-loopback authentication. |
 
 For example, to use desktop notifications where `notify-send` and a desktop session are available:
@@ -369,7 +422,7 @@ journalctl --user \
 
 **The goal defines the work.** Each resume asks the model to stay in scope, finish verified and committed steps, read state back, and report `PILOT-DONE` only for completed work. Those prompts live in [instruction.py](claude_pilot/instruction.py).
 
-Each instance manages Claude Code sessions on its execution host; [multiple hosts](#computers-vps-and-multiple-servers) can be controlled through an external layer. The package does not include a Codex driver or a supervisor that evaluates whether the work is on goal.
+Each instance manages Claude Code sessions on its execution host; [multiple hosts](#computers-vps-and-multiple-servers) can be controlled through an external layer. The package does not judge the work itself; `judge_command` is where your supervisor plugs in.
 
 ## Development
 

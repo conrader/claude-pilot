@@ -11,7 +11,8 @@ from __future__ import annotations
 import os
 import subprocess
 
-from . import instruction as instruction_mod, sessions
+from . import agents, instruction as instruction_mod, sessions
+from .agents import claude as claude_agent
 
 
 def _run(argv: list[str], cwd: str, timeout: int) -> subprocess.CompletedProcess:
@@ -24,12 +25,10 @@ def _run(argv: list[str], cwd: str, timeout: int) -> subprocess.CompletedProcess
 
 
 def _argv(settings: dict, tail: list[str]) -> list[str]:
-    """The agent command line: binary, the turn, then the non-interactive flags.
+    """The claude command line: binary, the turn, then the non-interactive flags.
 
-    A headless `-p` turn has no TTY to answer a permission prompt, so without
-    a permission mode every write blocks and the pilot reports a false
-    blocker. The operator chose to run an autonomous loop; it runs with the
-    permission stance they configured (bypassPermissions by default).
+    Kept for backward compatibility; agents/claude.py has its own copy used
+    on the dispatch path.
     """
     argv = [settings.get("agent_command", "claude"), *tail]
     mode = settings.get("permission_mode") or ""
@@ -45,27 +44,10 @@ def _argv(settings: dict, tail: list[str]) -> list[str]:
 def resume(rec: dict, instruction: str, settings: dict) -> tuple[bool, str]:
     """Resume the piloted session headlessly. Returns (ok, reply).
 
-    ok is the process's return code; reply is stdout, falling back to the
-    transcript's own last assistant message if the CLI produced nothing (a
-    background-agent conflict can exit non-zero with an empty stdout), and
-    finally to a tail of stderr.
+    Dispatches to the agent module (claude or codex) matching `rec`'s
+    "agent" field.
     """
-    argv = _argv(settings, ["-r", rec["session_id"], "-p", instruction])
-    timeout = settings.get("resume_timeout_s", 3600)
-    try:
-        r = _run(argv, rec["cwd"], timeout)
-    except Exception as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-    ok = r.returncode == 0
-    if ok:
-        reply = (r.stdout or "").strip()
-        if not reply:
-            reply = sessions.last_assistant_text(rec["cwd"], rec["session_id"])
-        return True, reply
-    reply = (r.stdout or "").strip() or sessions.last_assistant_text(rec["cwd"], rec["session_id"])
-    if not reply:
-        reply = (r.stderr or "").strip()[-2000:]
-    return False, reply
+    return agents.for_record(rec).resume(rec, instruction, settings)
 
 
 def compact(rec: dict, settings: dict) -> bool:
@@ -76,6 +58,8 @@ def compact(rec: dict, settings: dict) -> bool:
     if the handoff was refused or the fresh session's id could not be
     located, because losing the thread is worse than one skipped compaction.
     """
+    if rec.get("agent", "claude") != "claude":
+        return False
     ok, handoff = resume(rec, instruction_mod.handoff_request(), settings)
     if not ok or len(handoff.strip()) < 200:
         return False

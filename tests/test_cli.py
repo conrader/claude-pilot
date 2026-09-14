@@ -141,6 +141,96 @@ def test_revive_from_error_keeps_the_tick_counter(env, tmp_path):
     assert rec["state"] == "active" and rec["ticks"] == 2
 
 
+def _write_config(tmp_path, data):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps(data))
+    return cfg
+
+
+class _FakeAgentMod:
+    """Fake agent module for cli.agents, standing in for agents.claude/codex."""
+
+    def transcript_ids(self, cwd, host):
+        return ["fake-session-id"]
+
+    def newest_session(self, cwd, host):
+        return "fake-session-id"
+
+
+def test_start_agent_codex_host(env, tmp_path, monkeypatch, capsys):
+    import os as os_mod
+    os_mod.environ["CLAUDE_PILOT_CONFIG"] = str(
+        _write_config(tmp_path, {"hosts": {"box1": {"ssh": "user@box1"}}})
+    )
+    config.reload()
+    cwd = tmp_path / "remoteproj"
+    cwd.mkdir()
+
+    fake = _FakeAgentMod()
+    monkeypatch.setattr(cli.agents, "for_record", lambda rec: fake)
+
+    rc = cli.main(
+        ["start", "do the thing", "--cwd", str(cwd), "--agent", "codex", "--host", "box1", "--force"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "codex @ box1" in out
+    _, rec = registry.load(registry.name_for_cwd(str(cwd)))
+    assert rec["agent"] == "codex"
+    assert rec["host"] == "box1"
+    assert rec["session_id"] == "fake-session-id"
+
+
+def test_start_unknown_host_refused(env, tmp_path, capsys):
+    cwd = tmp_path / "remoteproj2"
+    cwd.mkdir()
+    rc = cli.main(
+        ["start", "do the thing", "--cwd", str(cwd), "--host", "nosuchbox", "--force"]
+    )
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "no such host configured" in out
+
+
+def test_codex_stop_round_trip(env, monkeypatch, capsys):
+    from claude_pilot.agents import codex as codex_mod
+
+    monkeypatch.setattr(
+        codex_mod, "stop_decision",
+        lambda payload, settings: {"decision": "block", "reason": "keep going"},
+    )
+    import io
+    import sys as sys_mod
+    monkeypatch.setattr(sys_mod, "stdin", io.StringIO(json.dumps({"session_id": "abc"})))
+    rc = cli.main(["codex-stop"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert json.loads(out.strip()) == {"decision": "block", "reason": "keep going"}
+
+
+def test_hosts_listing_with_fake_ssh(env, tmp_path, capsys):
+    import stat
+    ssh = tmp_path / "fakessh"
+    ssh.write_text(
+        "#!/bin/sh\n"
+        'eval "last=\\${$#}"\n'
+        'sh -c "$last"\n'
+    )
+    ssh.chmod(ssh.stat().st_mode | stat.S_IEXEC)
+    os.environ["CLAUDE_PILOT_CONFIG"] = str(
+        _write_config(
+            tmp_path,
+            {"ssh_command": str(ssh), "hosts": {"box1": {"ssh": "user@box1"}}},
+        )
+    )
+    config.reload()
+    rc = cli.main(["hosts"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "box1" in out
+    assert "reachable" in out
+
+
 def test_goal_reports_the_previous_state_when_reactivating(env, tmp_path, capsys):
     name = _enrolled(tmp_path)
     _, rec = registry.load(name)

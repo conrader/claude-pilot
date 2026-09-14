@@ -138,6 +138,61 @@ def test_inactive_pilot_not_woken(pilot_home, monkeypatch):
         server.shutdown()
 
 
+def test_stop_event_host_header_matches_record(pilot_home, monkeypatch):
+    records = [{"name": "remoteproj", "cwd": "/home/user/remoteproj", "state": "active", "host": "box1"}]
+    server, port, hookd = _start_server(records, monkeypatch)
+    try:
+        body = json.dumps({"hook_event_name": "Stop", "cwd": "/home/user/remoteproj"}).encode()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request(
+            "POST", "/hook", body=body,
+            headers={"Content-Length": str(len(body)), "X-Pilot-Host": "box1"},
+        )
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 204
+        assert (pilot_home.WAKE / "remoteproj.wake").exists()
+    finally:
+        server.shutdown()
+
+
+def test_stop_event_host_mismatch_no_marker(pilot_home, monkeypatch):
+    records = [{"name": "remoteproj", "cwd": "/home/user/remoteproj", "state": "active", "host": "box1"}]
+    server, port, hookd = _start_server(records, monkeypatch)
+    try:
+        body = json.dumps({"hook_event_name": "Stop", "cwd": "/home/user/remoteproj"}).encode()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request(
+            "POST", "/hook", body=body,
+            headers={"Content-Length": str(len(body)), "X-Pilot-Host": "box2"},
+        )
+        resp = conn.getresponse()
+        resp.read()
+        assert not (pilot_home.WAKE / "remoteproj.wake").exists()
+    finally:
+        server.shutdown()
+
+
+def test_codex_stop_event_never_writes_a_marker(pilot_home, monkeypatch):
+    records = [{"name": "codexproj", "cwd": "/home/user/codexproj", "state": "active", "agent": "codex"}]
+    server, port, hookd = _start_server(records, monkeypatch)
+    try:
+        body = json.dumps(
+            {"hook_event_name": "Stop", "cwd": "/home/user/codexproj", "_agent": "codex"}
+        ).encode()
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/hook", body=body, headers={"Content-Length": str(len(body))})
+        resp = conn.getresponse()
+        resp.read()
+        assert resp.status == 204
+        assert not (pilot_home.WAKE / "codexproj.wake").exists()
+        day = list(pilot_home.EVENTS.glob("*.jsonl"))
+        events = [json.loads(l) for l in day[0].read_text().splitlines()]
+        assert events[-1]["_agent"] == "codex"
+    finally:
+        server.shutdown()
+
+
 def test_authorised_loopback_and_token(pilot_home, monkeypatch):
     _, _, hookd = _start_server([], monkeypatch)
 

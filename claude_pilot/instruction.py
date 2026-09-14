@@ -5,11 +5,12 @@ DONE = "PILOT-DONE"
 BLOCKED = "PILOT-BLOCKED"
 
 
-def build_instruction(rec: dict, queued: list[dict]) -> str:
+def build_instruction(rec: dict, queued: list[dict], context: str = "") -> str:
     """Compose the prompt for one resume tick.
 
-    Includes the standing rules, any instructions queued in the pilot's
-    inbox since the last tick, and the goal and tick bounds.
+    Includes the standing rules, optional context from the operator's brain
+    connector, any instructions queued in the pilot's inbox since the last
+    tick, and the goal and tick bounds.
     """
     inbox_block = ""
     if queued:
@@ -19,7 +20,12 @@ def build_instruction(rec: dict, queued: list[dict]) -> str:
             f"{lines}\n\n"
         )
 
+    context_block = ""
+    if context:
+        context_block = f"Context from your operator's system:\n{context}\n\n"
+
     return (
+        f"{context_block}"
         f"You are being resumed by claude-pilot (tick {rec['ticks'] + 1} of "
         f"{rec['max_ticks']}, deadline {rec.get('deadline', 'none')}). "
         f"Goal: {rec['goal']}\n\n"

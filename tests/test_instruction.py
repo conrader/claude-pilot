@@ -33,6 +33,18 @@ def test_build_instruction_no_queue_block_when_empty():
     assert "Instructions from your operator" not in text
 
 
+def test_build_instruction_includes_context_before_inbox():
+    queued = [{"text": "also fix the docs"}]
+    text = instruction.build_instruction(_rec(), queued, context="the deploy is red")
+    assert "Context from your operator's system:\nthe deploy is red" in text
+    assert text.index("Context from your operator's system") < text.index("also fix the docs")
+
+
+def test_build_instruction_no_context_block_when_empty():
+    text = instruction.build_instruction(_rec(), [], context="")
+    assert "Context from your operator's system" not in text
+
+
 def test_handoff_request_is_nonempty_string():
     assert isinstance(instruction.handoff_request(), str)
     assert len(instruction.handoff_request()) > 10

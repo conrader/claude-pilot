@@ -71,8 +71,9 @@ class Handler(BaseHTTPRequestHandler):
                 fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
             day.chmod(0o600)
 
-            if payload.get("hook_event_name") == "Stop":
-                self._wake_matching(payload.get("cwd") or "", payload["_received_at"])
+            if payload.get("hook_event_name") == "Stop" and payload.get("_agent") != "codex":
+                host = self.headers.get("X-Pilot-Host") or payload.get("_host") or ""
+                self._wake_matching(payload.get("cwd") or "", payload["_received_at"], host)
 
             self.send_response(204)
             self.end_headers()
@@ -81,14 +82,21 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             print(f"hookd error: {type(exc).__name__}: {exc}", file=sys.stderr)
 
-    def _wake_matching(self, cwd: str, received_at: str) -> None:
-        """Drop a wake marker for every active record whose cwd matches."""
+    def _wake_matching(self, cwd: str, received_at: str, host: str) -> None:
+        """Drop a wake marker for every active record whose cwd and host match.
+
+        `host` comes from the `X-Pilot-Host` request header or the payload's
+        `_host` field, defaulting to "" (local); a record only wakes for an
+        event carrying the same host it was enrolled under.
+        """
         from claude_pilot import registry
 
         if not cwd:
             return
         for rec in registry.all_records():
             if rec.get("state") != "active":
+                continue
+            if rec.get("host", "") != host:
                 continue
             rec_cwd = (rec.get("cwd") or "").rstrip("/")
             if rec_cwd and (cwd == rec_cwd or cwd.startswith(rec_cwd + "/")):

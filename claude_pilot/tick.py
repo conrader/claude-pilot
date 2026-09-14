@@ -12,7 +12,7 @@ import datetime
 import fcntl
 import re
 
-from . import config, driver, instruction, notify, registry, sessions
+from . import agents, brain, config, driver, instruction, notify, registry, sessions
 
 _LIMIT_RE = re.compile(r"usage limit|rate limit|session limit|resets \d", re.I)
 
@@ -24,6 +24,8 @@ def _save(rec: dict) -> None:
 def _tick_one(rec: dict, settings: dict) -> bool:
     """Advance one record by a tick. Returns True if a turn was spent."""
     name = rec["name"]
+    host = rec.get("host", "")
+    agent = agents.for_record(rec)
     config.WAKE.mkdir(parents=True, exist_ok=True)
     woken = config.WAKE / f"{name}.wake"
     just_stopped = woken.exists()
@@ -87,22 +89,28 @@ def _tick_one(rec: dict, settings: dict) -> bool:
             _save(rec)
             return False
 
-    if sessions.interactive_agent_pid(rec["cwd"]):
+    # Remote TTYs are not visible from here; the interactive guard only
+    # makes sense for a local record, where /proc actually tells the truth.
+    if host == "" and sessions.interactive_agent_pid(rec["cwd"]):
         print(f"  {name}: interactive agent is open in this tree, leaving it to the human")
         rec["quiet_ticks"] = 0
         _save(rec)
         return False
 
+    # A codex record is normally driven by the Stop hook's synchronous
+    # continuation; the tick only steps in as a fallback once the rollout
+    # file has gone quiet, so this check keeps it from ever racing that
+    # loop, exactly as it keeps a claude tick from interrupting live work.
     if not just_stopped:
-        mtime = sessions.newest_transcript_mtime(rec["cwd"], rec.get("session_id"))
+        mtime = agent.newest_transcript_mtime(rec["cwd"], rec.get("session_id"), host)
         if mtime is not None:
             quiet = (registry.now().timestamp() - mtime) / 60
             if quiet < settings.get("idle_minutes", 8):
                 print(f"  {name}: alive, transcript {quiet:.0f} min old, leaving it to work")
                 return False
 
-    if rec.get("session_id") and sessions.transcript_is_gone(rec["cwd"], rec["session_id"]):
-        newer = sessions.newest_session(rec["cwd"])
+    if rec.get("session_id") and agent.transcript_is_gone(rec["cwd"], rec["session_id"], host):
+        newer = agent.newest_session(rec["cwd"], host)
         if newer and newer != rec["session_id"]:
             rec["session_id"] = newer
 
@@ -118,7 +126,8 @@ def _tick_one(rec: dict, settings: dict) -> bool:
         rec["quiet_ticks"] = 0
 
     queued = registry.inbox_drain(name)
-    prompt = instruction.build_instruction(rec, queued)
+    context = brain.fetch_context(rec, settings)
+    prompt = instruction.build_instruction(rec, queued, context)
     ok, reply = driver.resume(rec, prompt, settings)
     if not ok and queued:
         for q in queued:
@@ -150,8 +159,16 @@ def _tick_one(rec: dict, settings: dict) -> bool:
         notify.send(f"pilot {name} could not be resumed\n{reply[:400]}")
         print(f"  {name}: resume failed, {reply[:120]}")
     else:
+        verdict = brain.run_judge(rec, reply, settings)
+        if verdict.get("verdict") == "pause":
+            rec["state"] = "paused"
+            rec["paused_reason"] = verdict.get("reason", "")
+            notify.send(f"pilot {name} paused by judge: {verdict.get('reason', '')}")
+            print(f"  {name}: paused by judge, {verdict.get('reason', '')[:120]}")
+            _save(rec)
+            return True
         print(f"  {name}: tick {rec['ticks']} done")
-        est = sessions.estimate_tokens(rec["cwd"], rec["session_id"])
+        est = agent.estimate_tokens(rec["cwd"], rec["session_id"], host)
         if est >= settings.get("compact_tokens", 150000):
             rec["last_estimate"] = est
             if driver.compact(rec, settings):

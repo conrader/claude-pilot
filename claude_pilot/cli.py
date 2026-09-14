@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import shutil
 import sys
 from pathlib import Path
 
-from . import config, registry, sessions, tick as tick_mod
+from . import agents, config, registry, sessions, tick as tick_mod, transport
 
 _MANIFESTS = ("package.json", "pyproject.toml", "Cargo.toml", "go.mod", "Makefile")
 
@@ -23,20 +24,31 @@ def _looks_like_a_project(cwd: str) -> bool:
 def cmd_start(args) -> int:
     """Enrol the session running in this directory as a pilot."""
     cwd = str(Path(args.cwd or os.getcwd()).resolve())
+    agent_name = args.agent or "claude"
+    host = args.host or ""
 
-    if not _looks_like_a_project(cwd) and not args.force:
+    settings = config.settings()
+    if host:
+        try:
+            config.host_config(host)
+        except KeyError as exc:
+            print(f"claude-pilot: {exc}")
+            return 2
+
+    if host == "" and not _looks_like_a_project(cwd) and not args.force:
         print(f"claude-pilot: {cwd} does not look like a project tree.")
         print("  No git repo and no manifest. Run from the project's own directory,")
         print("  or pass --force if this is deliberate.")
         return 2
 
-    known_ids = sessions.transcript_ids(cwd)
+    agent_mod = agents.for_record({"agent": agent_name})
+    known_ids = agent_mod.transcript_ids(cwd, host)
     sid = args.session_id
     if sid and sid not in known_ids:
         print(f"claude-pilot: {sid} is not a recorded session for {cwd}.")
         return 2
     if not sid:
-        sid = sessions.newest_session(cwd)
+        sid = agent_mod.newest_session(cwd, host)
     if not sid:
         print(f"claude-pilot: no transcript recorded for {cwd} yet.")
         print("  Run this from inside the session you want piloted, after it has")
@@ -51,7 +63,6 @@ def cmd_start(args) -> int:
         print("  Re-arm deliberately: claude-pilot start --force ...")
         return 3
 
-    settings = config.settings()
     msg = registry.cap_block(name, args.allow_more, settings.get("cap", 3))
     if msg:
         print(msg)
@@ -60,6 +71,7 @@ def cmd_start(args) -> int:
     now = registry.now()
     rec = {
         "name": name, "cwd": cwd, "session_id": sid, "goal": args.goal,
+        "agent": agent_name, "host": host,
         "state": "active",
         "started_at": registry.iso(now),
         "active_since": registry.iso(now),
@@ -73,6 +85,7 @@ def cmd_start(args) -> int:
     registry.save(rec)
 
     print(f"claude-pilot: {name} enrolled")
+    print(f"  agent     {agent_name}{' @ ' + host if host else ''}")
     print(f"  session   {sid}")
     print(f"  goal      {args.goal}")
     print(f"  bounds    {args.ticks} ticks, until {rec['deadline']}")
@@ -95,7 +108,11 @@ def cmd_status(args) -> int:
         print("claude-pilot: nothing enrolled")
         return 0
     for r in sorted(records, key=lambda r: r.get("name", "")):
-        print(f"  {r['name']:<24} {r['state']:<10} tick {r.get('ticks', 0)}/{r.get('max_ticks', 0)} "
+        agent_name = r.get("agent", "claude")
+        host = r.get("host", "")
+        where = f"{agent_name}@{host}" if host else agent_name
+        print(f"  {r['name']:<24} {r['state']:<10} {where:<16} "
+              f"tick {r.get('ticks', 0)}/{r.get('max_ticks', 0)} "
               f"until {r.get('deadline', '?')[:16]}")
         print(f"    goal: {r.get('goal', '')[:96]}")
         if r.get("history"):
@@ -298,6 +315,47 @@ def cmd_hookd(args) -> int:
         sys.argv = old_argv
 
 
+def cmd_codex_stop(args) -> int:
+    """Read a codex Stop-hook payload from stdin, print the controller's decision.
+
+    Always exits 0: the hook that called this must never block a session on
+    a controller-side failure, so any exception here is swallowed by
+    stop_decision itself and an empty JSON object is printed as a fallback.
+    """
+    try:
+        raw = sys.stdin.read()
+        payload = json.loads(raw or "{}")
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    settings = config.settings()
+    try:
+        from .agents import codex
+
+        decision = codex.stop_decision(payload, settings)
+    except Exception:  # noqa: BLE001
+        decision = {}
+    print(json.dumps(decision))
+    return 0
+
+
+def cmd_hosts(args) -> int:
+    """List every configured remote host with reachability and binaries found."""
+    hosts = config.settings().get("hosts") or {}
+    if not hosts:
+        print("claude-pilot: no hosts configured")
+        return 0
+    for name in sorted(hosts):
+        hc = config.host_config(name)
+        ok, detail = transport.reachable(name)
+        status = "reachable" if ok else f"unreachable ({detail})"
+        found = []
+        for label, binname in (("claude", hc.get("claude", "claude")), ("codex", hc.get("codex", "codex"))):
+            r = transport.run(name, ["command", "-v", binname], timeout=10)
+            found.append(f"{label}={'yes' if r.returncode == 0 else 'no'}")
+        print(f"  {name:<16} {hc.get('ssh', ''):<28} {status:<28} {' '.join(found)}")
+    return 0
+
+
 def main(argv=None) -> int:
     """Parse argv and dispatch to the matching cmd_* function."""
     ap = argparse.ArgumentParser(prog="claude-pilot")
@@ -313,6 +371,8 @@ def main(argv=None) -> int:
     s.add_argument("--allow-more", dest="allow_more", action="store_true")
     s.add_argument("--force", action="store_true")
     s.add_argument("--name")
+    s.add_argument("--agent", choices=("claude", "codex"), default="claude")
+    s.add_argument("--host", default="")
     s.set_defaults(fn=cmd_start)
 
     sub.add_parser("tick").set_defaults(fn=cmd_tick)
@@ -356,6 +416,12 @@ def main(argv=None) -> int:
     iu = sub.add_parser("install-units")
     iu.add_argument("--write", action="store_true")
     iu.set_defaults(fn=cmd_install_units)
+
+    cs = sub.add_parser("codex-stop")
+    cs.set_defaults(fn=cmd_codex_stop)
+
+    ho = sub.add_parser("hosts")
+    ho.set_defaults(fn=cmd_hosts)
 
     args = ap.parse_args(argv)
     return args.fn(args)

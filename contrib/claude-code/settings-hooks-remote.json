@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"$CLAUDE_PILOT_TICK\" ] || { cat | curl -s -m 3 -X POST -H 'Content-Type: application/json' -H 'X-Pilot-Host: NAME' -H \"X-Pilot-Token: $(cat ~/.config/claude-pilot/hookd.token)\" --data-binary @- http://CENTRAL_HOST:8910/hook >/dev/null 2>&1 || true ; }"
+          }
+        ]
+      }
+    ]
+  }
+}

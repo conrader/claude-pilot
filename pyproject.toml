@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-pilot"
+version = "0.1.0"
+description = "Keep a Claude Code session working toward a goal while you are away: Stop-hook wakeups, bounded ticks, handoffs."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [{name = "Konrad Sierzputowski"}]
+keywords = ["claude", "claude-code", "agent", "autonomy", "automation"]
+classifiers = ["Programming Language :: Python :: 3", "License :: OSI Approved :: MIT License", "Operating System :: POSIX :: Linux"]
+
+[project.scripts]
+claude-pilot = "claude_pilot.cli:main"
+claude-pilot-hookd = "claude_pilot.hookd:main"
+
+[project.urls]
+Homepage = "https://github.com/conrader/claude-pilot"
+
+[tool.setuptools.packages.find]
+include = ["claude_pilot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

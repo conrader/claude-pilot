@@ -293,7 +293,7 @@ def _stop_decision(payload: dict, settings: dict) -> dict:
                 f"without finishing. Goal: {rec['goal'][:150]}",
             )
 
-    verdict = brain.run_judge(rec, message, settings)
+    verdict = brain.run_judge(rec, message, settings, phase="before")
     if verdict.get("verdict") == "pause":
         rec["paused_reason"] = verdict.get("reason", "")
         return _finish(

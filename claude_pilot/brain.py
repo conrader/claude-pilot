@@ -28,8 +28,13 @@ def fetch_context(rec: dict, settings: dict) -> str:
         return ""
 
 
-def run_judge(rec: dict, reply: str, settings: dict) -> dict:
-    """Run judge_command on {record, reply}; return {"verdict": "ok"|"pause", ...}.
+def run_judge(rec: dict, reply: str, settings: dict, phase: str = "after") -> dict:
+    """Run judge_command on {record, reply, phase}; return {"verdict": "ok"|"pause", ...}.
+
+    phase is "before" when the loop asks whether to spend the next turn at all
+    (reply is then the last recorded one, possibly empty) and "after" when it
+    has just received a fresh reply. A judge that only reads external state,
+    like a supervisor's verdict file, can ignore the distinction.
 
     Anything other than a JSON object with a verdict of ok or pause counts as
     ok and is reported on stdout, so a misbehaving judge can only ever fail
@@ -39,7 +44,7 @@ def run_judge(rec: dict, reply: str, settings: dict) -> dict:
     if not cmd:
         return {"verdict": "ok"}
     try:
-        r = subprocess.run(cmd, shell=True, input=json.dumps({"record": rec, "reply": reply}),
+        r = subprocess.run(cmd, shell=True, input=json.dumps({"record": rec, "reply": reply, "phase": phase}),
                            capture_output=True, text=True, timeout=TIMEOUT)
         data = json.loads((r.stdout or "").strip() or "{}")
         if isinstance(data, dict) and data.get("verdict") in ("ok", "pause"):

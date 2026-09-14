@@ -125,6 +125,18 @@ def _tick_one(rec: dict, settings: dict) -> bool:
     else:
         rec["quiet_ticks"] = 0
 
+    # Ask the judge before spending a turn: a supervisor that already knows
+    # the session is off goal should stop it here, not one turn later.
+    last_reply = rec["history"][-1].get("reply", "") if rec.get("history") else ""
+    gate = brain.run_judge(rec, last_reply, settings, phase="before")
+    if gate.get("verdict") == "pause":
+        rec["state"] = "paused"
+        rec["paused_reason"] = gate.get("reason", "")
+        notify.send(f"pilot {name} paused by judge: {gate.get('reason', '')}")
+        print(f"  {name}: paused by judge before the turn, {gate.get('reason', '')[:120]}")
+        _save(rec)
+        return False
+
     queued = registry.inbox_drain(name)
     context = brain.fetch_context(rec, settings)
     prompt = instruction.build_instruction(rec, queued, context)

@@ -224,7 +224,7 @@ The registry is a directory of JSON files and every command is scriptable, so an
 | Setting | When it runs | Contract |
 | --- | --- | --- |
 | `context_command` | before every resume | The pilot record as JSON on stdin. Whatever it prints is appended to the instruction under "Context from your operator's system". Project notes, guardrails, the last review, a memory lookup: one command, your choice. |
-| `judge_command` | after every turn | `{"record": …, "reply": …}` on stdin. Print `{"verdict": "ok"}` to continue or `{"verdict": "pause", "reason": "…"}` to park the pilot in `paused` with that reason until you `revive` it. |
+| `judge_command` | before every turn and after it | `{"record": …, "reply": …, "phase": "before" or "after"}` on stdin. Print `{"verdict": "ok"}` to continue or `{"verdict": "pause", "reason": "…"}` to park the pilot in `paused` with that reason until you `revive` it. The `before` call lets a supervisor that already knows the session is off goal stop it without spending another turn; `after` sees the fresh reply. |
 
 Both are time-boxed to 30 seconds and can never break a tick: a failing or malformed command counts as "no context" and "ok", and is logged. This is the seam where a supervisor that reads transcripts, checks the diff against the goal, or consults a knowledge base belongs; the loop itself stays deliberately dumb.
 

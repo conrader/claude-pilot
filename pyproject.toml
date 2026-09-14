@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-pilot"
-version = "0.2.0"
+version = "0.2.1"
 description = "Keep a Claude Code session working toward a goal while you are away: Stop-hook wakeups, bounded ticks, handoffs."
 readme = "README.md"
 license = {text = "MIT"}

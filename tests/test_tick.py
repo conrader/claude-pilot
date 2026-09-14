@@ -314,7 +314,7 @@ def test_judge_pause_stops_further_resumes(env, tmp_path, monkeypatch):
     assert saved["paused_reason"] == "off track"
 
     tick_mod.tick(_settings("claude", judge_command=str(judge_script)))
-    assert fake.resume_calls == 1  # a paused pilot is not active, no second turn
+    assert fake.resume_calls == 0  # an always-pausing judge parks the pilot before any turn is spent
 
 
 def test_tick_lock_skips_concurrent_tick(env, tmp_path):
@@ -328,3 +328,31 @@ def test_tick_lock_skips_concurrent_tick(env, tmp_path):
     finally:
         fcntl.flock(lock_fh, fcntl.LOCK_UN)
         lock_fh.close()
+
+
+def test_judge_before_the_turn_pauses_without_spending_it(env, tmp_path, monkeypatch, capsys):
+    """A 'before' verdict of pause parks the pilot and the agent is never resumed."""
+    from claude_pilot import registry, tick, brain
+    rec = {"name": "gated", "cwd": str(tmp_path), "session_id": "11111111-1111-1111-1111-111111111111",
+           "agent": "claude", "goal": "g", "state": "active", "ticks": 1, "max_ticks": 5,
+           "deadline": "2999-01-01T00:00:00+00:00", "history": [{"at": "2026-01-01T00:00:00+00:00", "ok": True, "reply": "prev"}],
+           "persistent": False, "quiet_ticks": 0}
+    registry.save(rec)
+    seen = {}
+    def fake_judge(r, reply, settings, phase="after"):
+        seen[phase] = reply
+        return {"verdict": "pause", "reason": "known off goal"} if phase == "before" else {"verdict": "ok"}
+    monkeypatch.setattr(brain, "run_judge", fake_judge)
+    monkeypatch.setattr(tick.driver, "resume", lambda *a, **k: (_ for _ in ()).throw(AssertionError("resumed")))
+    monkeypatch.setattr(tick.sessions, "interactive_agent_pid", lambda *a, **k: None)
+    import types
+    fake_agent = types.SimpleNamespace(newest_transcript_mtime=lambda *a, **k: 0.0, transcript_is_gone=lambda *a, **k: False,
+                                       newest_session=lambda *a, **k: None, estimate_tokens=lambda *a, **k: 0)
+    monkeypatch.setattr(tick.agents, "for_record", lambda r: fake_agent)
+    (env / "state").mkdir(exist_ok=True)
+    from claude_pilot import config
+    (config.WAKE).mkdir(parents=True, exist_ok=True); (config.WAKE / "gated.wake").touch()
+    assert tick.tick({"idle_minutes": 8, "idle_backoff": 6}) == 0
+    _, rec = registry.load("gated")
+    assert rec["state"] == "paused" and rec["ticks"] == 1 and rec["paused_reason"] == "known off goal"
+    assert seen == {"before": "prev"}

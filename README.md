@@ -1,119 +1,270 @@
-# claude-pilot
+<p align="center">
+  <img src="docs/assets/hero.svg" alt="claude-pilot: Give it a goal. Let it keep going. On your computer, VPS, or across your servers." width="100%">
+</p>
 
-**Keep a Claude Code session working toward a goal while you are away.**
+<p align="center">
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/Python-3.11%2B-82B7AA?style=flat-square&amp;labelColor=202528" alt="Python 3.11 or newer"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/platform-Linux-82B7AA?style=flat-square&amp;labelColor=202528" alt="Platform: Linux"></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/runtime_dependencies-0-E6B48F?style=flat-square&amp;labelColor=202528" alt="Zero runtime dependencies"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-E6B48F?style=flat-square&amp;labelColor=202528" alt="MIT license"></a>
+</p>
 
-You start a session, give it a goal, walk off. `claude-pilot` resumes the session every time it goes quiet, feeds it any instructions you queued in the meantime, keeps it inside a tick and time budget, hands the work over to a fresh session before the context fills up, and tells you when the goal is done, when the session is blocked on something only you can supply, or when the budget ran out.
+<h1 align="center">claude-pilot</h1>
 
-It is the autonomy loop I run my own projects on. The whole thing is one Python package with no dependencies, driven by a Claude Code `Stop` hook and a systemd user timer.
+<p align="center"><strong>Keep a Claude Code session working toward a goal while you are away.</strong></p>
 
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#computers-vps-and-multiple-servers">Multiple hosts</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
+
+Give an existing session a clear goal. `claude-pilot` resumes it when it goes quiet, delivers instructions you queue along the way, and attempts a handoff to a fresh session when the transcript grows large. It records when the session reports completion, needs your help, or reaches its configured bounds.
+
+One Python package. Standard library only. A Claude Code `Stop` hook for prompt wakeups, with a systemd timer as a fallback.
+
+Run it on your Linux computer, a VPS, or several servers. Install a pilot on each host and control them through SSH or your own orchestration layer.
+
+## Why use it?
+
+| Keep work moving | Keep control |
+| --- | --- |
+| **Resume quiet sessions.** Continue toward the same goal across headless turns. | **Bound the loop.** Default limits of 40 ticks and 12 hours. |
+| **Steer as you go.** Queue instructions without replacing the goal. | **Yield to your terminal.** An open interactive Claude session takes priority. |
+| **Carry context forward.** Request a handoff before starting a fresh session. | **See the outcome.** Track status and plug in your own notifications. |
+
+<p align="center">
+  <img src="docs/assets/terminal.svg" alt="Illustrative terminal workflow: start a pilot for a CSV export, queue an instruction to include UTF-8 coverage, then inspect the active pilot's status." width="100%">
+</p>
+
+*Illustrative workflow; commands are copyable below. The project name, session ID, dates, and progress vary by run.*
+
+## Quick start
+
+### 1. Install
+
+You need **Linux**, **Python 3.11+**, and an installed, authenticated `claude` CLI. The setup below also uses Git, curl, and systemd user services. The interactive-session guard depends on Linux `/proc`.
+
+```bash
+git clone https://github.com/conrader/claude-pilot.git
+cd claude-pilot
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install .
+
+# Add /pilot to Claude Code.
+mkdir -p ~/.claude/commands
+cp contrib/claude-code/commands/pilot.md ~/.claude/commands/pilot.md
 ```
-$ cd ~/code/my-app
-$ claude            # work a bit, so a transcript exists
-> /pilot Ship the CSV export: endpoint, tests, docs. Do not touch billing.
 
-claude-pilot: my-app enrolled
-  session   3f9c1a2e-…
-  goal      Ship the CSV export: endpoint, tests, docs. Do not touch billing.
-  bounds    40 ticks, until 2026-09-15T02:10:00+00:00
+Keep this checkout and its virtual environment in place: the generated services use the installed executable's path. Activate the same environment when using `claude-pilot` in another shell.
 
-  The loop resumes this session when it goes quiet. To finish, say
-  PILOT-DONE in the session, or run: claude-pilot stop my-app
-```
+Already have your own Python environment? Install directly with `python -m pip install git+https://github.com/conrader/claude-pilot.git`; copy the [slash command](contrib/claude-code/commands/pilot.md) separately if you want `/pilot`.
 
-Then close the laptop.
+### 2. Connect the Stop hook
 
-## How it works
-
-```
- you ──/pilot "goal"──▶ registry (one JSON per pilot)
-                              │
- Claude Code ──Stop hook──▶ hookd ──▶ wake marker ──▶ systemd .path ──▶ tick
-                                                                      │
- systemd timer (every 10 min) ────────────────────────────────────────┤
-                                                                      ▼
-                           tick: for each active pilot
-                             skip if a human has the session open in a terminal
-                             skip if the transcript changed in the last 8 min
-                             skip most idle ticks (backoff) unless there is new input
-                             claude -r <session> -p "<goal + rules + your queued instructions>"
-                             read the reply: PILOT-DONE / PILOT-BLOCKED / error / continue
-                             hand off to a fresh session when the transcript gets large
-```
-
-Three ideas carry the design:
-
-1. **The transcript is the ground truth.** Liveness is the mtime of the session's transcript file, not a process list or a hook event. A session that is writing its transcript is working and must not be resumed, because a second resume forks the conversation into two parallel chains on one working tree.
-2. **A Stop hook proves a turn ended, not that a session ended.** The hook wakes the loop instantly instead of waiting for the timer, but a person with the session open in a terminal outranks every other signal. The loop leaves it alone.
-3. **Bounds are real.** Forty ticks and twelve hours by default. A pilot that runs out is stopped and reported, not silently renewed. `--persistent` renews the bounds instead, for long-lived loops you switch off yourself.
-
-## Install
-
-Python 3.11+ on Linux (the interactive-session guard reads `/proc`; everything else is portable). Requires the `claude` CLI.
-
-```
-pip install git+https://github.com/conrader/claude-pilot
-```
-
-### 1. The Stop hook
-
-Add to `~/.claude/settings.json` (merge with your existing hooks):
+Merge this into `~/.claude/settings.json`, preserving your existing settings and hooks. The same snippet is available in [settings-hooks.json](contrib/claude-code/settings-hooks.json).
 
 ```json
 {
   "hooks": {
     "Stop": [
-      { "hooks": [ { "type": "command",
-        "command": "[ -n \"$CLAUDE_PILOT_TICK\" ] || { cat | curl -s -m 3 -X POST -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:8910/hook >/dev/null 2>&1 || true ; }" } ] }
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"$CLAUDE_PILOT_TICK\" ] || { cat | curl -s -m 3 -X POST -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:8910/hook >/dev/null 2>&1 || true ; }"
+          }
+        ]
+      }
     ]
   }
 }
 ```
 
-The guard on `CLAUDE_PILOT_TICK` keeps headless ticks from waking themselves. The `|| true` matters: a hook that fails interrupts the session that fired it, and the receiver is built the same way, it always answers 204.
+`CLAUDE_PILOT_TICK` prevents headless turns from waking themselves. The short timeout and `|| true` let your session continue if the receiver is unavailable.
 
-### 2. The services
+### 3. Start the services
 
+```bash
+claude-pilot install-units --write
+systemctl --user enable --now \
+  claude-pilot-hookd.service \
+  claude-pilot.timer \
+  claude-pilot-wake.path
+
+# Confirm the hook receiver is responding.
+curl -fsS http://127.0.0.1:8910/health
+# ok
 ```
-claude-pilot install-units --write     # writes four user units into ~/.config/systemd/user
-systemctl --user enable --now claude-pilot-hookd.service claude-pilot.timer claude-pilot-wake.path
+
+The installer writes **five unit files** to `~/.config/systemd/user/` and requests a daemon reload.
+
+| Unit | Purpose |
+| --- | --- |
+| `claude-pilot-hookd.service` | Receive Stop events; create wake markers for matching active pilots. |
+| `claude-pilot-wake.path` | Watch for wake markers. |
+| `claude-pilot-wake.service` | Run a tick when the path watcher fires. |
+| `claude-pilot.timer` | Schedule periodic ticks, with a 10-minute interval. |
+| `claude-pilot.service` | Run a tick when the timer fires. |
+
+**No systemd?** Run `claude-pilot hookd` under your supervisor and schedule `claude-pilot tick` with cron. The periodic tick consumes wake markers too; immediate wakeups need a separate watcher. Tick execution is locked against overlapping schedulers.
+
+> [!IMPORTANT]
+> The computer or VPS running the pilot must remain awake. Your own laptop can disconnect when the pilot runs on another host. For work after logout, the host's systemd user manager must remain running too; where permitted, `loginctl enable-linger "$USER"` enables that. The services also need access to your Claude authentication and executable. If `claude` is outside their PATH, set `agent_command` to its absolute path in [configuration](#configuration).
+
+### 4. Give it a goal
+
+Open Claude Code in the project you want to work on. Let it make at least one tool call so a transcript exists, then run:
+
+```text
+/pilot Ship the CSV export: endpoint, tests, docs. Do not touch billing.
 ```
 
-| unit | role |
-|---|---|
-| `claude-pilot-hookd.service` | receives hook events on `127.0.0.1:8910`, drops a wake marker when a piloted session stops |
-| `claude-pilot-wake.path` + `.service` | runs a tick the moment a marker appears |
-| `claude-pilot.timer` + `.service` | runs a tick every 10 minutes regardless |
+When you want the background loop to take over, exit the interactive Claude session after the current work finishes. **Leaving it open in a terminal makes the pilot wait.**
 
-No systemd? Run `claude-pilot hookd` under any supervisor and `claude-pilot tick` from cron. Ticks take a lock, so overlapping schedulers are safe.
+You can also enroll the newest recorded session from your shell:
 
-### 3. The slash command
+```bash
+cd ~/code/my-app
+claude-pilot start \
+  "Ship the CSV export: endpoint, tests, docs. Do not touch billing." \
+  --name my-app --ticks 40 --hours 12
 
-Copy `contrib/claude-code/commands/pilot.md` to `~/.claude/commands/pilot.md`. `/pilot <goal>` enrols the current session and tells the model the rules of the loop; `/pilot status` and `/pilot stop` do what they say.
+claude-pilot tell my-app "Include UTF-8 coverage in the export tests."
+claude-pilot status my-app
+```
+
+> [!NOTE]
+> Headless turns default to `permission_mode: "bypassPermissions"`, which bypasses Claude Code permission prompts. Set the mode deliberately before running a pilot. Goals and `CLAUDE.md` guide the model; they are not an execution sandbox. Other permission modes can leave unattended work waiting for approval.
+
+## Computers, VPS, and multiple servers
+
+The same setup works on a Linux workstation, an always-on VPS, or several servers with different projects. Install and authenticate Claude Code on each execution host, then install `claude-pilot` there. Each host owns its sessions, transcripts, registry, and scheduler.
+
+<p align="center">
+  <img src="docs/assets/deployment.svg" alt="Multiple-host deployment: use SSH or an external orchestrator to manage independent pilots on a Linux computer, VPS, and build server. Each host runs local Claude sessions with its own state." width="100%">
+</p>
+
+From one terminal, you can steer work on different machines:
+
+```bash
+# Example SSH hosts and install paths; replace with your own.
+ssh dev-vps '~/tools/claude-pilot/.venv/bin/claude-pilot status'
+ssh build-server '~/tools/claude-pilot/.venv/bin/claude-pilot tell my-app "Run the export tests next."'
+ssh dev-vps '~/tools/claude-pilot/.venv/bin/claude-pilot stop my-app'
+```
+
+This is a deployment pattern built from **one installation per host** and an external control layer such as SSH. The current package does not provide a built-in fleet scheduler, shared cross-host registry, or automatic migration of a running session between machines. Its context handoffs start a fresh session on the same host. Use your existing repository workflow to move code between hosts.
+
+## How it works
+
+### Two triggers, one loop
+
+```mermaid
+flowchart TD
+    stop["Claude Code Stop hook"] --> receiver["Local hook receiver"]
+    receiver --> wake["Wake marker + path watcher"]
+    operator["Your queued instruction"] --> wake
+    wake --> tick["Tick loop · exclusive lock"]
+    timer["Periodic timer"] --> tick
+    state[("Pilot records + inbox")] <--> tick
+    tick --> guards{"Eligible to resume?"}
+    guards -->|Yes| resume["Headless Claude Code turn"]
+    guards -->|No| wait["Wait for a later tick"]
+    resume --> state
+```
+
+Each tick examines enrolled pilots in order. Before resuming one, it checks its state and bounds, yields to an interactive Claude process, and applies liveness and idle-backoff rules. The resume prompt includes the goal, current bounds, standing instructions, and queued messages.
+
+| Signal | What the loop does |
+| --- | --- |
+| Interactive Claude session in the project | Wait, even if a wake marker exists. |
+| Fresh transcript activity without a wake marker | Wait; the default quiet window is 8 minutes, including subagent transcripts. |
+| Stop hook or `tell` wake marker | Bypass the quiet-window and idle-backoff checks, while still honoring the interactive guard and bounds. |
+| Quiet session with no new input | Resume on the first eligible idle tick, then back off; default `idle_backoff` is 6. |
+| Failed resume after draining instructions | Put those instructions back in the inbox. |
+
+### A fresh session, with a handoff
+
+After a successful continuing turn, the loop estimates transcript tokens. At the default threshold of **150,000**, it attempts this handoff:
+
+```mermaid
+sequenceDiagram
+    participant P as Pilot loop
+    participant A as Current session
+    participant B as Fresh session
+    participant T as Local transcripts
+    P->>A: Request state, next steps, and gotchas
+    A-->>P: Handoff text
+    alt Request succeeds and handoff is at least 200 characters
+        P->>B: Start with the goal and handoff
+        B-->>P: CLI result
+        P->>T: Look for a new session ID
+        T-->>P: New ID, if recorded
+        Note over P,T: Switch only after success and a different ID
+    else Handoff fails or is too short
+        Note over P,A: Keep the current session
+    end
+```
+
+This is a text-based handoff, using an approximate token count. If the fresh turn fails or no different session ID is found, the pilot keeps its original session reference. See [driver.py](claude_pilot/driver.py) and [sessions.py](claude_pilot/sessions.py).
+
+### Clear outcomes
+
+| Outcome | Pilot state | Next step |
+| --- | --- | --- |
+| Reply contains `PILOT-DONE` | `done` | Review the delivered work. |
+| Reply contains `PILOT-BLOCKED` | `blocked` | Supply what is missing, then `revive`. |
+| Deadline reached | `expired` | `revive` extends an elapsed deadline. |
+| Tick budget reached | `exhausted` | `revive` starts a fresh tick budget. |
+| Resume fails | `error` | Inspect the last reply, fix the cause, then `revive`. |
+| You run `stop` | `stopped` | Re-arming requires explicit `--force`. |
+
+Completion and blocking are **reported by the model**. The loop recognizes reply markers; it does not independently verify the implementation. Normal successful replies keep the pilot active. A detected background-agent conflict also keeps it active and does not spend a tick.
+
+Notifications go to stdout and, when configured, your `notify_command`. Identical messages are deduplicated for ten minutes.
 
 ## Commands
 
-| command | what it does |
-|---|---|
-| `claude-pilot start "<goal>"` | enrol the newest session in the current directory. `--ticks`, `--hours`, `--persistent`, `--name`, `--session-id`, `--force` |
-| `claude-pilot tick` | one pass over all pilots (what the timer and the wake path run) |
-| `claude-pilot status [name]` | state, ticks, deadline, last replies |
-| `claude-pilot tell <name> "<text>"` | queue an instruction; delivered on the next resume, put back if the resume fails |
-| `claude-pilot inbox <name>` | show queued and delivered instructions |
-| `claude-pilot goal <name> "<text>"` | change the goal of a running pilot |
-| `claude-pilot stop <name>` | stop for good. A stop is final; `start --force` re-arms deliberately |
-| `claude-pilot revive <name>` | bring back an expired, exhausted, errored or paused pilot with fresh bounds |
-| `claude-pilot hookd` | the hook receiver in the foreground |
-| `claude-pilot install-units [--write]` | render (or install) the systemd user units |
+| Command | What it does |
+| --- | --- |
+| `claude-pilot start "<goal>"` | Enroll the newest transcript in the current project. Supports `--name`, `--cwd`, `--session-id`, `--ticks`, `--hours`, `--persistent`, `--force`, and `--allow-more`. |
+| `claude-pilot tick` | Run one pass over enrolled pilots. |
+| `claude-pilot status [name]` | Show state, tick count, deadline, goal, and the latest recorded reply. |
+| `claude-pilot tell <name> "<text>"` | Queue an instruction and create a wake marker. |
+| `claude-pilot inbox <name>` | Show pending instructions. `--drain` marks them consumed. |
+| `claude-pilot goal <name> "<text>"` | Replace the goal without resetting ticks or deadline; also reactivate a done, blocked, errored, expired, or exhausted pilot. |
+| `claude-pilot stop <name>` | Mark a pilot stopped to prevent future resumes. |
+| `claude-pilot revive <name>` | Reactivate an existing pilot; extend an elapsed deadline; reset the tick budget if it was exhausted. Supports `--hours`, `--persistent`, `--force`, and `--allow-more`. |
+| `claude-pilot hookd` | Run the hook receiver in the foreground; supports `--port` and `--bind`. |
+| `claude-pilot install-units [--write]` | Print the systemd units, or install them. |
 
-`start` refuses when the directory is not a project (no `.git`, no manifest), when no transcript exists for it yet, when a previous pilot there was stopped by a human, or when the concurrency cap (3) is reached. Every refusal says why.
+Inside Claude Code, use `/pilot <goal>`, `/pilot status`, or `/pilot stop`.
 
-## What the session is told
+By default, `start` requires a project directory with `.git` or a recognized manifest, plus an existing transcript. The active-pilot cap is **3**. Refusals explain why enrollment could not proceed.
 
-Each resume sends the goal, the tick and deadline, your queued instructions, and a short set of standing rules: work in steps that end verified and committed; read state back from the system of record instead of trusting an exit code; do not widen scope; a failed verification is a full stop; reply `PILOT-DONE` only when the goal is fully met and verified, `PILOT-BLOCKED` with what you need when only the human can unblock you; being still in progress is a fine state to be resumed in. The text lives in `claude_pilot/instruction.py` and is meant to be edited.
+<details>
+<summary><strong>Bounds, recovery, and persistent pilots</strong></summary>
+
+- Bounds are checked before resuming; the deadline does not interrupt a turn already running. `resume_timeout_s` limits each CLI invocation.
+- The tick budget counts resume attempts, not tokens or money. Handoff calls can add model turns beyond that count.
+- `revive` preserves the tick counter, except for an exhausted pilot, which gets a fresh budget. Changing a goal preserves the existing bounds.
+- `--persistent` renews elapsed deadlines and resets exhausted tick counters. It can still finish, block, or error; it does not override `stop`.
+- Recognized usage-limit errors are retried after at least 60 minutes. That recovery can extend an elapsed deadline, but does not clear an exhausted tick counter.
+- `stop` updates the record; it is not a process-kill command. Let an in-flight tick finish, then confirm the state with `status`.
+
+</details>
 
 ## Configuration
 
-`~/.config/claude-pilot/config.json`, every key optional, every key overridable with `CLAUDE_PILOT_<KEY>` in the environment:
+Create `~/.config/claude-pilot/config.json`. Every key is optional; environment variables named `CLAUDE_PILOT_<KEY>` override file values, which override built-in defaults.
+
+<details>
+<summary><strong>Show all defaults</strong></summary>
 
 ```json
 {
@@ -128,39 +279,85 @@ Each resume sends the goal, the tick and deadline, your queued instructions, and
   "compact_tokens": 150000,
   "resume_timeout_s": 3600,
   "notify_command": "",
-  "hookd_port": 8910
+  "hookd_port": 8910,
+  "hookd_token_file": "~/.config/claude-pilot/hookd.token"
 }
 ```
 
-`permission_mode` is passed to `claude --permission-mode` on every headless turn. The default, `bypassPermissions`, is what makes an unattended loop possible at all: a `-p` turn has no terminal to answer a prompt, so anything short of it turns every file write into a false `PILOT-BLOCKED`. It also means the session can do whatever your goal and your `CLAUDE.md` allow, unprompted. Use `acceptEdits` if you want writes but no shell, and keep destructive rules in `CLAUDE.md`, where the model reads them every turn.
+</details>
 
-`notify_command` is any shell command; the message arrives on stdin. A Telegram bot, `mail`, `notify-send`, a webhook, whatever you read. Identical messages within ten minutes are sent once. State lives in `~/.local/state/claude-pilot/` (`CLAUDE_PILOT_HOME` to move it).
+| Setting | Use it to… |
+| --- | --- |
+| `agent_command` | Point to your Claude executable, using an absolute path when needed by systemd. |
+| `model` / `permission_mode` | Forward model selection and permission mode to each headless turn. |
+| `idle_minutes` / `idle_backoff` | Control quiet-session detection and how often idle pilots resume. |
+| `default_ticks` / `default_hours` / `cap` | Set default enrollment bounds and the active-pilot cap. |
+| `compact_tokens` / `resume_timeout_s` | Set the handoff threshold and per-invocation timeout. |
+| `notify_command` | Run your notification command with the message on stdin. |
+| `hookd_port` / `hookd_token_file` | Configure the receiver port and optional off-loopback authentication. |
 
-## Things it will not do
+For example, to use desktop notifications where `notify-send` and a desktop session are available:
 
-- Judge whether the session is doing the right thing. The loop enforces bounds and delivers instructions; the quality of the work is the model's and yours. A supervisor that reads transcripts and pauses off-goal pilots is a natural add-on and is where I put mine.
-- Resume a session running on another machine, or a Codex session. Both existed in the original and were cut to keep this small; the seams are still visible in `driver.py` if you want them back.
-- Protect you from a goal like "make it work" with no verification. Write goals with a definition of done.
+```json
+{
+  "notify_command": "xargs -0 notify-send 'claude-pilot'"
+}
+```
 
-## Lessons baked in
+Without a token file, the receiver defaults to `127.0.0.1`. If a nonempty token file is present, its default bind address becomes `0.0.0.0`, and off-loopback requests require a matching `X-Pilot-Token` header. Change the hook URL too if you change the port.
 
-Every guard in `tick.py` was paid for. In order of cost:
+| Path override | Default |
+| --- | --- |
+| `CLAUDE_PILOT_HOME` | `~/.local/state/claude-pilot/`: records, inboxes, events, wake markers, and lock. |
+| `CLAUDE_PILOT_CONFIG` | `~/.config/claude-pilot/config.json` |
+| `CLAUDE_PROJECTS_DIR` | `~/.claude/projects/`: Claude Code transcripts. |
 
-- Two schedulers resumed the same session seconds apart and the pilot forked into two chains doing the work twice on a production checkout. Hence the tick lock, and hence "transcript mtime, not hook events" as the liveness signal.
-- A stray wake marker with no matching pilot kept a `.path` unit restarting until systemd hit its start limit and silently gave up on every pilot. Hence markers are consumed first, in every state, before anything can `continue`.
-- A resume that failed after draining the inbox ate the operator's instruction and nobody could tell why the pilot sat idle. Hence instructions go back when the turn did not happen.
-- A pilot that finished its goal and was told to stay open spent a full model turn every ten minutes concluding "nothing changed". Hence idle backoff, which never delays a real instruction.
-- Any path with a dot in it was unpilotable because the transcript directory name replaces every non-alphanumeric character, not only slashes. Hence `transcript_slug`.
-- A Stop hook fired at the end of a human's turn and the loop resumed the session next to the person typing in it. Hence the interactive-session guard.
+Shell environment overrides apply to commands started from that shell. For systemd services, use the JSON config or explicitly configure their environment.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| “No transcript recorded” | Open Claude in the target directory and let it make a tool call before enrolling. |
+| Pilot stays active but does not resume | Exit an open interactive Claude session; inspect the quiet window and idle backoff. |
+| `claude` works in your shell but fails under systemd | Set `agent_command` to the full path returned by `command -v claude`. Confirm authentication is available to the service user. |
+| Stop hooks do not wake the pilot | Check `/health`, the hook settings, and `claude-pilot-wake.path`. |
+| Instructions wait on a blocked pilot | `tell` queues input but does not reactivate the pilot; run `revive` after supplying the missing information. |
+
+```bash
+claude-pilot status
+systemctl --user status \
+  claude-pilot-hookd.service claude-pilot.timer claude-pilot-wake.path
+journalctl --user \
+  -u claude-pilot.service -u claude-pilot-wake.service \
+  -u claude-pilot-hookd.service -n 80 --no-pager
+```
+
+## Design notes
+
+**Transcript activity is the liveness signal.** Without a wake marker, recent writes to the session or its subagent transcripts mean the loop leaves it alone. A Stop hook accelerates scheduling; a human's interactive terminal still takes priority.
+
+**Scheduling must survive duplicate triggers.** A file lock serializes ticks. Wake markers are consumed before state checks, and orphaned markers are removed so a path watcher cannot restart forever.
+
+**Operator input must survive a failed turn.** Drained inbox messages are put back if the resume fails. Idle backoff never delays a wake marker or pending instruction, though the other guards still apply.
+
+**The goal defines the work.** Each resume asks the model to stay in scope, finish verified and committed steps, read state back, and report `PILOT-DONE` only for completed work. Those prompts live in [instruction.py](claude_pilot/instruction.py).
+
+Each instance manages Claude Code sessions on its execution host; [multiple hosts](#computers-vps-and-multiple-servers) can be controlled through an external layer. The package does not include a Codex driver or a supervisor that evaluates whether the work is on goal.
 
 ## Development
 
-```
-python3 -m pytest -q
+From your activated virtual environment in the checkout:
+
+```bash
+python -m pip install -e . pytest
+python -m pytest -q
 ```
 
-Pure stdlib, tests included for every module. Files stay under 500 lines by rule. Issues and pull requests welcome; a bug report with the transcript directory listing and `claude-pilot status` output is usually enough.
+The application uses only the Python standard library; pytest is a development dependency. Tests cover the CLI, configuration, session discovery, driver, hooks, registry, instructions, notifications, and tick loop. Source files stay under 500 lines by project convention.
+
+Issues and pull requests are welcome. Include the observed behavior and relevant `claude-pilot status` output; remove private goals, paths, and credentials before sharing logs.
 
 ## License
 
-MIT.
+[MIT](LICENSE) · Built by [Konrad Sierzputowski](https://github.com/conrader).

@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="620" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">One workflow, multiple hosts</title>
+  <desc id="desc">Deployment pattern: an operator uses SSH or an external orchestrator to control independent claude-pilot installations on a Linux computer, a VPS, and a build server. Each host keeps its own Claude sessions, transcripts, registry, and scheduler. Commands travel to hosts; sessions stay local.</desc>
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#9caa9f"/></marker></defs>
+  <rect width="1200" height="620" rx="20" fill="#f3efe6"/>
+  <g font-family="DejaVu Sans, Arial, sans-serif">
+    <text x="40" y="48" fill="#786353" font-size="12" font-weight="700" letter-spacing="2">ONE WORKFLOW. MULTIPLE HOSTS.</text>
+    <text x="40" y="85" fill="#283c33" font-size="25" font-weight="700">Run a pilot wherever the work lives.</text>
+    <rect x="348" y="111" width="504" height="68" rx="12" fill="#23352f"/>
+    <text x="600" y="139" text-anchor="middle" fill="#f1ede3" font-size="17" font-weight="700">Your terminal or external orchestrator</text>
+    <text x="600" y="162" text-anchor="middle" fill="#a9c7b7" font-size="13">SSH · start / tell / status / stop</text>
+    <g stroke="#9caa9f" stroke-width="1.5" fill="none" marker-end="url(#arrow)" marker-start="url(#arrow)">
+      <path d="M466 185 V204 H218 V241"/><path d="M600 185 V241"/><path d="M734 185 V204 H982 V241"/>
+    </g>
+    <g>
+      <rect x="40" y="249" width="356" height="293" rx="14" fill="#fffdf7" stroke="#d8dbd0"/>
+      <rect x="422" y="249" width="356" height="293" rx="14" fill="#fffdf7" stroke="#d8dbd0"/>
+      <rect x="804" y="249" width="356" height="293" rx="14" fill="#fffdf7" stroke="#d8dbd0"/>
+    </g>
+    <g fill="#283c33" font-size="19" font-weight="700">
+      <text x="66" y="287">Linux computer</text><text x="448" y="287">VPS</text><text x="830" y="287">Build server</text>
+    </g>
+    <g fill="#778377" font-size="12"><text x="66" y="309">HOST 01</text><text x="448" y="309">HOST 02</text><text x="830" y="309">HOST 03</text></g>
+    <g fill="#23352f"><rect x="66" y="331" width="304" height="49" rx="8"/><rect x="448" y="331" width="304" height="49" rx="8"/><rect x="830" y="331" width="304" height="49" rx="8"/></g>
+    <g fill="#f1ede3" font-size="16" text-anchor="middle"><text x="218" y="362">claude-pilot</text><text x="600" y="362">claude-pilot</text><text x="982" y="362">claude-pilot</text></g>
+    <g stroke="#9caa9f" stroke-width="1.5" marker-end="url(#arrow)"><path d="M218 382 V404"/><path d="M600 382 V404"/><path d="M982 382 V404"/></g>
+    <g fill="#e7ede3"><rect x="66" y="409" width="304" height="48" rx="8"/><rect x="448" y="409" width="304" height="48" rx="8"/><rect x="830" y="409" width="304" height="48" rx="8"/></g>
+    <g fill="#314a3e" font-size="15" text-anchor="middle"><text x="218" y="439">Local Claude Code sessions</text><text x="600" y="439">Local Claude Code sessions</text><text x="982" y="439">Local Claude Code sessions</text></g>
+    <g fill="#687668" font-size="12" text-anchor="middle">
+      <text x="218" y="489">Own registry · transcripts · scheduler</text><text x="600" y="489">Own registry · transcripts · scheduler</text><text x="982" y="489">Own registry · transcripts · scheduler</text>
+      <text x="218" y="513">Project checkout + authentication</text><text x="600" y="513">Project checkout + authentication</text><text x="982" y="513">Project checkout + authentication</text>
+    </g>
+    <text x="600" y="584" text-anchor="middle" fill="#786353" font-size="14">Deployment pattern: remote commands, independent local sessions.</text>
+  </g>
+</svg>

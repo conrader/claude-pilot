@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="480" viewBox="0 0 1200 480" role="img" aria-labelledby="title desc">
+  <title id="title">claude-pilot</title>
+  <desc id="desc">Give it a goal. Let it keep going. A bounded autonomy loop for Claude Code, on your computer, VPS, or across your servers.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#171e22"/><stop offset="1" stop-color="#273733"/></linearGradient>
+    <linearGradient id="plane" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffe5c4"/><stop offset="1" stop-color="#d88a65"/></linearGradient>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse"><path d="M 36 0 L 0 0 0 36" fill="none" stroke="#b2c5b8" stroke-opacity=".06"/></pattern>
+  </defs>
+  <rect width="1200" height="480" rx="24" fill="url(#bg)"/>
+  <rect width="1200" height="480" rx="24" fill="url(#grid)"/>
+  <g fill="none" stroke="#9bb6a8">
+    <circle cx="954" cy="219" r="189" opacity=".12"/>
+    <circle cx="954" cy="219" r="143" opacity=".16"/>
+    <circle cx="954" cy="219" r="96" opacity=".20"/>
+    <path d="M776 282 C715 187 798 63 920 65 C1020 65 1105 153 1092 252 C1080 342 996 389 909 355" stroke="#dca582" stroke-width="2" stroke-dasharray="5 9" opacity=".75"/>
+  </g>
+  <g font-family="DejaVu Sans, Arial, sans-serif">
+    <path d="M58 50 L87 41 L77 70 L71 58 Z" fill="#e7b18e"/>
+    <text x="105" y="63" fill="#f3eee4" font-size="24" font-weight="700" letter-spacing="-.7">claude-pilot</text>
+    <text x="58" y="134" fill="#9fbdaf" font-size="12" font-weight="700" letter-spacing="3">THE AUTONOMY LOOP FOR CLAUDE CODE</text>
+    <text x="54" y="210" fill="#f4f0e7" font-size="64" font-weight="700" letter-spacing="-3">Give it a goal.</text>
+    <text x="54" y="283" fill="#eab18b" font-size="64" font-weight="700" letter-spacing="-3">Let it keep going.</text>
+    <text x="58" y="332" fill="#b4c0b7" font-size="19">Resume quiet sessions. Carry the work forward.</text>
+    <path d="M58 374 H639" stroke="#52625c" stroke-opacity=".6"/>
+    <text x="58" y="415" fill="#d7ded5" font-size="14" letter-spacing=".6">YOUR COMPUTER</text>
+    <circle cx="224" cy="410" r="2.5" fill="#dca582"/>
+    <text x="244" y="415" fill="#d7ded5" font-size="14" letter-spacing=".6">YOUR VPS</text>
+    <circle cx="346" cy="410" r="2.5" fill="#dca582"/>
+    <text x="366" y="415" fill="#d7ded5" font-size="14" letter-spacing=".6">YOUR SERVERS</text>
+  </g>
+  <path d="M846 212 L1039 126 L976 318 L927 244 Z" fill="url(#plane)"/>
+  <path d="M927 244 L1039 126 L943 260 L927 283 Z" fill="#9f644b"/>
+  <path d="M927 244 L943 260 L927 283 Z" fill="#c98664"/>
+  <path d="M846 212 L927 244 L1039 126" fill="none" stroke="#ffe5c8" stroke-opacity=".65" stroke-width="1.5"/>
+  <g fill="#192725" stroke="#72978b" stroke-width="1.5">
+    <circle cx="801" cy="120" r="18"/><circle cx="1078" cy="297" r="18"/><circle cx="904" cy="355" r="18"/>
+  </g>
+  <g fill="none" stroke="#aacfc0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M794 120 L799 125 L808 115"/><path d="M1071 297 L1076 302 L1085 292"/><path d="M897 355 L902 360 L911 350"/>
+  </g>
+</svg>

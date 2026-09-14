@@ -125,7 +125,7 @@ def cmd_revive(args) -> int:
         return 1
     if rec.get("state") == "stopped" and not args.force:
         print(f"claude-pilot: {args.name} was stopped by {rec.get('stopped_by', 'a human')} "
-              "-- a stop is final; use --force to re-arm")
+              ", a stop is final; use --force to re-arm")
         return 3
     settings = config.settings()
     msg = registry.cap_block(args.name, args.allow_more, settings.get("cap", 3))
@@ -135,6 +135,10 @@ def cmd_revive(args) -> int:
     was = rec.get("state")
     rec["state"] = "active"
     rec.pop("paused_reason", None)
+    if was == "exhausted":
+        # A revived pilot that kept its spent counter would be exhausted again on
+        # its very next tick; reviving from exhaustion means a fresh budget.
+        rec["ticks"] = 0
     rec["active_since"] = registry.iso(registry.now())
     rec["quiet_ticks"] = 0
     try:
@@ -165,8 +169,9 @@ def cmd_goal(args) -> int:
     rec["goal"] = args.goal
     rec.setdefault("goal_history", []).append({"at": registry.iso(registry.now()), "was": old})
     if rec.get("state") in ("done", "blocked", "error", "expired", "exhausted"):
+        was_state = rec["state"]
         rec["state"] = "active"
-        print(f"  (was {rec['state']}; a new goal reactivates it)")
+        print(f"  (was {was_state}; a new goal reactivates it)")
     registry.save(rec)
     print(f"claude-pilot: {args.name} goal replaced\n  was: {old[:90]}\n  now: {args.goal[:90]}")
     return 0

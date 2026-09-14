@@ -108,3 +108,46 @@ def test_install_units_renders_four_units_with_wake_path(env, capsys):
     assert "claude-pilot-hookd.service" in out
     assert str(config.WAKE) in out
     assert "OnUnitActiveSec=10min" in out
+
+
+def _enrolled(tmp_path, name="proj"):
+    cwd = tmp_path / name
+    (cwd / ".git").mkdir(parents=True)
+    _make_transcript(tmp_path, str(cwd), "11111111-2222-3333-4444-555555555555")
+    assert cli.main(["start", "ship it", "--cwd", str(cwd), "--name", name, "--ticks", "3"]) == 0
+    return name
+
+
+def test_revive_from_exhausted_starts_a_fresh_tick_budget(env, tmp_path, capsys):
+    name = _enrolled(tmp_path)
+    _, rec = registry.load(name)
+    rec["state"] = "exhausted"
+    rec["ticks"] = rec["max_ticks"]
+    registry.save(rec)
+    assert cli.main(["revive", name]) == 0
+    _, rec = registry.load(name)
+    assert rec["state"] == "active" and rec["ticks"] == 0
+    assert "exhausted -> active" in capsys.readouterr().out
+
+
+def test_revive_from_error_keeps_the_tick_counter(env, tmp_path):
+    name = _enrolled(tmp_path)
+    _, rec = registry.load(name)
+    rec["state"] = "error"
+    rec["ticks"] = 2
+    registry.save(rec)
+    assert cli.main(["revive", name]) == 0
+    _, rec = registry.load(name)
+    assert rec["state"] == "active" and rec["ticks"] == 2
+
+
+def test_goal_reports_the_previous_state_when_reactivating(env, tmp_path, capsys):
+    name = _enrolled(tmp_path)
+    _, rec = registry.load(name)
+    rec["state"] = "blocked"
+    registry.save(rec)
+    assert cli.main(["goal", name, "ship it, then document it"]) == 0
+    out = capsys.readouterr().out
+    assert "(was blocked;" in out
+    _, rec = registry.load(name)
+    assert rec["state"] == "active" and rec["goal"] == "ship it, then document it"

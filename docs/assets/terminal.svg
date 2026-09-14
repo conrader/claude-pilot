@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="610" viewBox="0 0 1200 610" role="img" aria-labelledby="title desc">
+  <title id="title">A goal, a nudge, and a status check</title>
+  <desc id="desc">Illustrative terminal workflow using real claude-pilot commands. Start a pilot named my-app for a CSV export, queue UTF-8 test coverage, then inspect its status. Values are examples.</desc>
+  <rect width="1200" height="610" rx="20" fill="#f3efe6"/>
+  <g font-family="DejaVu Sans, Arial, sans-serif">
+    <text x="40" y="47" font-size="12" font-weight="700" letter-spacing="2" fill="#786353">ONE GOAL. CONTINUOUS PROGRESS.</text>
+    <text x="1160" y="47" font-size="11" text-anchor="end" letter-spacing="1.4" fill="#786353">ILLUSTRATIVE WORKFLOW</text>
+  </g>
+  <rect x="32" y="73" width="1136" height="444" rx="14" fill="#1b2226"/>
+  <path d="M32 119 H1168" stroke="#394248"/>
+  <g><circle cx="55" cy="96" r="5" fill="#d9927b"/><circle cx="74" cy="96" r="5" fill="#dabc84"/><circle cx="93" cy="96" r="5" fill="#86b5a1"/></g>
+  <text x="600" y="100" fill="#aebdb5" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="12">~/code/my-app</text>
+  <g font-family="DejaVu Sans Mono, monospace" font-size="18">
+    <text x="59" y="160" fill="#e7b18e">$ <tspan fill="#f1ede3">claude-pilot start "Ship the CSV export: endpoint, tests, docs." --name my-app</tspan></text>
+    <text x="59" y="194" fill="#9dcdb7">claude-pilot: my-app enrolled</text>
+    <text x="82" y="225" fill="#9aaea3">session   <tspan fill="#d8ded6">3f9c1a2e-…</tspan></text>
+    <text x="82" y="254" fill="#9aaea3">bounds    <tspan fill="#d8ded6">40 ticks, until 2026-09-15T02:10:00+00:00</tspan></text>
+    <text x="59" y="317" fill="#e7b18e">$ <tspan fill="#f1ede3">claude-pilot tell my-app "Include UTF-8 coverage in the export tests."</tspan></text>
+    <text x="59" y="351" fill="#9dcdb7">claude-pilot: queued for my-app (1 pending)</text>
+    <text x="59" y="414" fill="#e7b18e">$ <tspan fill="#f1ede3">claude-pilot status my-app</tspan></text>
+    <text x="82" y="448" fill="#d8ded6">my-app     <tspan fill="#9dcdb7">active</tspan>     tick 3/40     until 2026-09-15T02:10</text>
+    <text x="82" y="477" fill="#9aaea3">goal: Ship the CSV export: endpoint, tests, docs.</text>
+  </g>
+  <g font-family="DejaVu Sans, Arial, sans-serif">
+    <circle cx="57" cy="561" r="15" fill="#dfb899"/><text x="57" y="566" text-anchor="middle" fill="#423329" font-size="13" font-weight="700">1</text>
+    <text x="84" y="566" fill="#3c4740" font-size="15">Define the outcome</text>
+    <circle cx="446" cy="561" r="15" fill="#dfb899"/><text x="446" y="566" text-anchor="middle" fill="#423329" font-size="13" font-weight="700">2</text>
+    <text x="473" y="566" fill="#3c4740" font-size="15">Steer the next turn</text>
+    <circle cx="838" cy="561" r="15" fill="#dfb899"/><text x="838" y="566" text-anchor="middle" fill="#423329" font-size="13" font-weight="700">3</text>
+    <text x="865" y="566" fill="#3c4740" font-size="15">Check the progress</text>
+  </g>
+</svg>

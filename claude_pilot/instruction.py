@@ -1,8 +1,19 @@
 """The resume prompt sent to a pilot each tick, and the handoff/compaction prompts."""
 from __future__ import annotations
 
+import re
+
 DONE = "PILOT-DONE"
 BLOCKED = "PILOT-BLOCKED"
+
+
+def outcome(reply: str) -> str | None:
+    """Recognize explicit status lines, not mentions in ordinary prose."""
+    if re.search(r"(?m)^[ \t]*" + re.escape(DONE) + r"[ \t]*\r?$", reply):
+        return "done"
+    if re.search(r"(?m)^[ \t]*" + re.escape(BLOCKED) + r"(?:[ \t]|\r?$)", reply):
+        return "blocked"
+    return None
 
 
 def build_instruction(rec: dict, queued: list[dict], context: str = "") -> str:

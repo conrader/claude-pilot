@@ -12,7 +12,7 @@ import datetime
 import fcntl
 import re
 
-from . import agents, brain, config, driver, instruction, notify, registry, sessions
+from . import agents, brain, config, driver, instruction, notify, registry, sessions, wake
 
 _LIMIT_RE = re.compile(r"usage limit|rate limit|session limit|resets \d", re.I)
 
@@ -23,14 +23,48 @@ def _save(rec: dict) -> None:
 
 def _tick_one(rec: dict, settings: dict) -> bool:
     """Advance one record by a tick. Returns True if a turn was spent."""
+    try:
+        return _advance(rec, settings)
+    except registry.ConflictError:
+        print(f"  {rec['name']}: state changed, preserving the newer record")
+        return False
+
+
+def _desktop_delivery(rec: dict, agent, host: str) -> bool:
+    """Return True if waiting or terminal; inspect receipts before new bounds."""
+    delivery = rec.get("_queued_continuation")
+    if not delivery:
+        return False
+    name = rec["name"]
+    activity = agent.desktop_info(rec["cwd"], rec["session_id"], host)
+    if (activity.get("active") is not False or not activity.get("turn_id")
+            or activity["turn_id"] == delivery.get("after_turn_id")):
+        print(f"  {name}: a desktop continuation is outstanding, waiting for delivery")
+        return True
+    registry.inbox_ack(name, delivery.get("inbox_ids", []))
+    rec.pop("_queued_continuation")
+    reply = activity.get("reply", "")
+    outcome = instruction.outcome(reply) if delivery.get("goal") == rec["goal"] else None
+    if outcome:
+        rec["state"] = outcome
+        rec.setdefault("history", []).append(
+            {"at": registry.iso(registry.now()), "ok": True, "reply": reply[:400]})
+    _save(rec)
+    if outcome:
+        notify.send(f"pilot {name} {outcome.upper()} after desktop continuation\n{reply[:600]}")
+        return True
+    return False
+
+
+def _advance(rec: dict, settings: dict) -> bool:
     name = rec["name"]
     host = rec.get("host", "")
     agent = agents.for_record(rec)
-    config.WAKE.mkdir(parents=True, exist_ok=True)
-    woken = config.WAKE / f"{name}.wake"
-    just_stopped = woken.exists()
-    if just_stopped:
-        woken.unlink(missing_ok=True)
+    event = wake.consume(name)
+    just_stopped = (event.get("kind") == "stop"
+                    and rec.get("agent", "claude") == "claude"
+                    and bool(rec.get("session_id"))
+                    and event.get("session_id") == rec["session_id"])
 
     # A pilot that died on a usage limit is waiting, not broken.
     if rec.get("state") == "error" and rec.get("history"):
@@ -60,6 +94,9 @@ def _tick_one(rec: dict, settings: dict) -> bool:
         _save(rec)
         return False
 
+    if _desktop_delivery(rec, agent, host):
+        return False
+
     if rec.get("persistent"):
         if rec["ticks"] >= rec["max_ticks"]:
             rec["ticks"] = 0
@@ -74,27 +111,38 @@ def _tick_one(rec: dict, settings: dict) -> bool:
         try:
             if registry.now() > datetime.datetime.fromisoformat(rec["deadline"]):
                 rec["state"] = "expired"
+                _save(rec)
                 notify.send(f"pilot {name} hit its deadline after {rec['ticks']} tick(s). "
                             f"Goal: {rec['goal'][:150]}")
                 print(f"  {name}: deadline reached, pilot stopped")
-                _save(rec)
                 return False
         except (KeyError, ValueError):
             pass
         if rec["ticks"] >= rec["max_ticks"]:
             rec["state"] = "exhausted"
+            _save(rec)
             notify.send(f"pilot {name} used all {rec['max_ticks']} ticks without finishing. "
                         f"Goal: {rec['goal'][:150]}")
             print(f"  {name}: tick budget exhausted, pilot stopped")
-            _save(rec)
             return False
 
     # Remote TTYs are not visible from here; the interactive guard only
     # makes sense for a local record, where /proc actually tells the truth.
-    if host == "" and sessions.interactive_agent_pid(rec["cwd"]):
+    interactive = None
+    if not host:
+        if rec.get("agent") == "codex":
+            interactive = sessions.interactive_agent_pid(rec["cwd"], agent="codex")
+        else:
+            interactive = sessions.interactive_agent_pid(rec["cwd"])
+    if interactive:
         print(f"  {name}: interactive agent is open in this tree, leaving it to the human")
         rec["quiet_ticks"] = 0
         _save(rec)
+        return False
+
+    if rec.get("agent") == "codex" and agent.turn_in_progress(
+            rec["cwd"], rec.get("session_id"), host):
+        print(f"  {name}: Codex has an unfinished turn, leaving it to work")
         return False
 
     # A codex record is normally driven by the Stop hook's synchronous
@@ -132,32 +180,49 @@ def _tick_one(rec: dict, settings: dict) -> bool:
     if gate.get("verdict") == "pause":
         rec["state"] = "paused"
         rec["paused_reason"] = gate.get("reason", "")
+        _save(rec)
         notify.send(f"pilot {name} paused by judge: {gate.get('reason', '')}")
         print(f"  {name}: paused by judge before the turn, {gate.get('reason', '')[:120]}")
-        _save(rec)
         return False
 
-    queued = registry.inbox_drain(name)
+    queued = registry.inbox_pending(name)
     context = brain.fetch_context(rec, settings)
     prompt = instruction.build_instruction(rec, queued, context)
-    ok, reply = driver.resume(rec, prompt, settings)
-    if not ok and queued:
-        for q in queued:
-            registry.inbox_add(name, q.get("text", ""))
-        print(f"  {name}: {len(queued)} instruction(s) put back, the turn did not happen")
-
+    # Reserve the budget before launching. A concurrent stop/goal update is
+    # either seen here or preserved when the eventual result is committed.
     rec["ticks"] = rec.get("ticks", 0) + 1
+    _save(rec)
+    ok, reply = driver.resume(rec, prompt, settings)
+    queued_to_desktop = ok and "_queued_continuation" in rec
+    if queued_to_desktop:
+        rec["_queued_continuation"]["inbox_ids"] = [q["id"] for q in queued]
+    elif ok:
+        registry.inbox_ack(name, [q["id"] for q in queued])
+    elif queued:
+        print(f"  {name}: {len(queued)} instruction(s) remain pending")
+
+    if not registry.is_current(rec):
+        print(f"  {name}: state changed during the turn, preserving the newer record")
+        return True
+
     rec.setdefault("history", []).append(
         {"at": registry.iso(registry.now()), "ok": ok, "reply": reply[:400]}
     )
 
-    if instruction.DONE in reply:
+    if queued_to_desktop:
+        _save(rec)
+        print(f"  {name}: continuation queued; waiting for the desktop turn")
+        return True
+
+    outcome = instruction.outcome(reply) if ok else None
+    note = ""
+    if outcome == "done":
         rec["state"] = "done"
-        notify.send(f"pilot {name} DONE after {rec['ticks']} tick(s)\n{reply[:600]}")
+        note = f"pilot {name} DONE after {rec['ticks']} tick(s)\n{reply[:600]}"
         print(f"  {name}: reported done")
-    elif instruction.BLOCKED in reply:
+    elif outcome == "blocked":
         rec["state"] = "blocked"
-        notify.send(f"pilot {name} BLOCKED, needs you\n{reply[:600]}")
+        note = f"pilot {name} BLOCKED, needs you\n{reply[:600]}"
         print(f"  {name}: blocked, needs a human")
     elif not ok and "background agent" in reply:
         rec["ticks"] -= 1
@@ -168,21 +233,22 @@ def _tick_one(rec: dict, settings: dict) -> bool:
         print(f"  {name}: session runs as a background agent, leaving it to work")
     elif not ok:
         rec["state"] = "error"
-        notify.send(f"pilot {name} could not be resumed\n{reply[:400]}")
+        note = f"pilot {name} could not be resumed\n{reply[:400]}"
         print(f"  {name}: resume failed, {reply[:120]}")
     else:
         verdict = brain.run_judge(rec, reply, settings)
         if verdict.get("verdict") == "pause":
             rec["state"] = "paused"
             rec["paused_reason"] = verdict.get("reason", "")
+            _save(rec)
             notify.send(f"pilot {name} paused by judge: {verdict.get('reason', '')}")
             print(f"  {name}: paused by judge, {verdict.get('reason', '')[:120]}")
-            _save(rec)
             return True
         print(f"  {name}: tick {rec['ticks']} done")
         est = agent.estimate_tokens(rec["cwd"], rec["session_id"], host)
         if est >= settings.get("compact_tokens", 150000):
             rec["last_estimate"] = est
+            _save(rec)
             if driver.compact(rec, settings):
                 print(f"  {name}: compacted to a fresh session")
             else:
@@ -191,6 +257,8 @@ def _tick_one(rec: dict, settings: dict) -> bool:
             rec["last_estimate"] = est
 
     _save(rec)
+    if note:
+        notify.send(note)
     return True
 
 

@@ -9,14 +9,20 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
+import os
 import re
+import uuid
 from pathlib import Path
 
-from . import config
+from . import config, storage
 
 STATES = (
     "active", "done", "blocked", "expired", "exhausted", "error", "stopped", "paused",
 )
+
+
+class ConflictError(RuntimeError):
+    """A record changed since the caller read it; reload before retrying."""
 
 
 def now() -> datetime.datetime:
@@ -60,9 +66,26 @@ def load(name: str):
 
 
 def save(rec: dict) -> None:
-    """Write a pilot record, keyed by rec['name']."""
-    config.PILOTS.mkdir(parents=True, exist_ok=True)
-    _record_path(rec["name"]).write_text(json.dumps(rec, indent=1))
+    """Atomically save unless another writer changed the loaded revision.
+
+    Updates the caller's revision on success. Legacy records start at zero.
+    Never hold this lock while running an agent or an operator command.
+    """
+    path = _record_path(rec["name"])
+    with storage.locked(path):
+        _, current = load(rec["name"])
+        revision = (current or {}).get("_revision", 0)
+        if revision != rec.get("_revision", 0):
+            raise ConflictError(f"pilot {rec['name']} changed during this operation")
+        updated = dict(rec, _revision=revision + 1)
+        storage.atomic_write(path, json.dumps(updated, indent=1))
+        rec["_revision"] = updated["_revision"]
+
+
+def is_current(rec: dict) -> bool:
+    """Whether a long-running action still belongs to the current record."""
+    _, current = load(rec["name"])
+    return current is not None and current.get("_revision", 0) == rec.get("_revision", 0)
 
 
 def all_records() -> list[dict]:
@@ -146,9 +169,13 @@ def inbox_path(name: str) -> Path:
 
 def inbox_add(name: str, text: str) -> None:
     """Queue an instruction for a pilot's next tick."""
-    config.PILOTS.mkdir(parents=True, exist_ok=True)
-    with inbox_path(name).open("a") as fh:
-        fh.write(json.dumps({"at": iso(now()), "text": text, "consumed": False}) + "\n")
+    path = inbox_path(name)
+    with storage.locked(path):
+        with path.open("a") as fh:
+            fh.write(json.dumps({"id": str(uuid.uuid4()), "at": iso(now()),
+                                 "text": text, "consumed": False}) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
 
 
 def _rows(name: str) -> list[dict]:
@@ -167,17 +194,48 @@ def _rows(name: str) -> list[dict]:
     return rows
 
 
+def _inbox_rows(name: str) -> list[dict]:
+    """Assign durable identities to legacy rows while holding the inbox lock."""
+    rows = _rows(name)
+    changed = False
+    for row in rows:
+        if not row.get("id"):
+            row["id"] = str(uuid.uuid4())
+            changed = True
+    if changed:
+        _write_rows(name, rows)
+    return rows
+
+
+def _write_rows(name: str, rows: list[dict]) -> None:
+    storage.atomic_write(inbox_path(name), "".join(json.dumps(r) + "\n" for r in rows))
+
+
 def inbox_pending(name: str) -> list[dict]:
-    """Instructions not yet consumed, oldest first."""
-    return [r for r in _rows(name) if not r.get("consumed")]
+    """Snapshot unacknowledged instructions without consuming them."""
+    with storage.locked(inbox_path(name)):
+        return [r for r in _inbox_rows(name) if not r.get("consumed")]
+
+
+def inbox_ack(name: str, ids: list[str]) -> None:
+    """Acknowledge only delivered IDs, preserving concurrently appended input."""
+    if not ids:
+        return
+    with storage.locked(inbox_path(name)):
+        rows = _inbox_rows(name)
+        for row in rows:
+            if row["id"] in ids:
+                row["consumed"] = True
+        _write_rows(name, rows)
 
 
 def inbox_drain(name: str) -> list[dict]:
     """Return pending instructions and mark them consumed on disk."""
-    rows = _rows(name)
-    pending = [r for r in rows if not r.get("consumed")]
-    if pending:
-        for r in rows:
-            r["consumed"] = True
-        inbox_path(name).write_text("\n".join(json.dumps(r) for r in rows) + "\n")
-    return pending
+    with storage.locked(inbox_path(name)):
+        rows = _inbox_rows(name)
+        pending = [r for r in rows if not r.get("consumed")]
+        if pending:
+            for r in rows:
+                r["consumed"] = True
+            _write_rows(name, rows)
+        return pending

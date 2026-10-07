@@ -8,37 +8,8 @@ tick.
 """
 from __future__ import annotations
 
-import os
-import subprocess
-
-from . import agents, instruction as instruction_mod, sessions
+from . import agents, instruction as instruction_mod, registry
 from .agents import claude as claude_agent
-
-
-def _run(argv: list[str], cwd: str, timeout: int) -> subprocess.CompletedProcess:
-    env = dict(os.environ)
-    env["CLAUDE_PILOT_TICK"] = "1"
-    env["PILOT_HEADLESS"] = "1"
-    return subprocess.run(
-        argv, capture_output=True, text=True, timeout=timeout, cwd=cwd, env=env,
-    )
-
-
-def _argv(settings: dict, tail: list[str]) -> list[str]:
-    """The claude command line: binary, the turn, then the non-interactive flags.
-
-    Kept for backward compatibility; agents/claude.py has its own copy used
-    on the dispatch path.
-    """
-    argv = [settings.get("agent_command", "claude"), *tail]
-    mode = settings.get("permission_mode") or ""
-    if mode:
-        argv += ["--permission-mode", mode]
-    argv += ["--output-format", "text"]
-    model = settings.get("model") or ""
-    if model:
-        argv += ["--model", model]
-    return argv
 
 
 def resume(rec: dict, instruction: str, settings: dict) -> tuple[bool, str]:
@@ -60,21 +31,19 @@ def compact(rec: dict, settings: dict) -> bool:
     """
     if rec.get("agent", "claude") != "claude":
         return False
+    if "_revision" in rec and not registry.is_current(rec):
+        return False
     ok, handoff = resume(rec, instruction_mod.handoff_request(), settings)
     if not ok or len(handoff.strip()) < 200:
         return False
+    if "_revision" in rec and not registry.is_current(rec):
+        return False
 
     opening = instruction_mod.handoff_opening(handoff, rec)
-    argv = _argv(settings, ["-p", opening])
-    timeout = settings.get("resume_timeout_s", 3600)
     try:
-        r = _run(argv, rec["cwd"], timeout)
+        new_sid = claude_agent.start(rec, opening, settings)
     except Exception:
         return False
-    if r.returncode != 0:
-        return False
-
-    new_sid = sessions.newest_session(rec["cwd"])
     if not new_sid or new_sid == rec.get("session_id"):
         return False
     rec["previous_sessions"] = rec.get("previous_sessions", []) + [rec["session_id"]]

@@ -85,10 +85,11 @@ def test_newest_transcript_mtime_needs_sid(env, tmp_path, monkeypatch):
     assert codex.newest_transcript_mtime(cwd, sid, "") == 555
     # a remote host runs the same lookup over the transport; stand it in with a local runner
     import subprocess
-    monkeypatch.setattr(codex.transport, "python_on",
-                        lambda host, script, *a, **k: subprocess.run(
-                            ["python3", "-c", script, a[0], str(codex_home / "sessions")],
-                            capture_output=True, text=True))
+    def remote_python(host, script, *args, **kwargs):
+        args = list(args)
+        args[-1] = str(codex_home if len(args) == 3 else codex_home / "sessions")
+        return subprocess.run(["python3", "-c", script, *args], capture_output=True, text=True)
+    monkeypatch.setattr(codex.transport, "python_on", remote_python)
     assert codex.newest_transcript_mtime(cwd, sid, "somehost") == 555
 
 
@@ -188,7 +189,10 @@ def test_stop_decision_continue_blocks_with_goal_and_inbox(env, tmp_path):
     _, rec = registry.load("demo")
     assert rec["ticks"] == 1
     assert rec["history"][-1]["reply"] == "partial progress"
-    # inbox drained
+    # Keep it durable until the next Stop acknowledges actual delivery.
+    assert len(registry.inbox_pending("demo")) == 1
+    codex.stop_decision(_payload(sid, "completed that instruction", turn_id="turn-2"),
+                        config.settings())
     assert registry.inbox_pending("demo") == []
 
 

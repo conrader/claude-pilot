@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import json
 import os
@@ -9,7 +10,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import agents, config, registry, sessions, tick as tick_mod, transport
+from . import agents, config, registry, sessions, tick as tick_mod, transport, wake
 
 _MANIFESTS = ("package.json", "pyproject.toml", "Cargo.toml", "go.mod", "Makefile")
 
@@ -81,6 +82,7 @@ def cmd_start(args) -> int:
         "quiet_ticks": 0,
         "previous_sessions": [],
         "compactions": 0,
+        "_revision": (prior or {}).get("_revision", 0),
     }
     registry.save(rec)
 
@@ -203,8 +205,7 @@ def cmd_tell(args) -> int:
     registry.inbox_add(args.name, text)
     n = len(registry.inbox_pending(args.name))
     print(f"claude-pilot: queued for {args.name} ({n} pending)")
-    config.WAKE.mkdir(parents=True, exist_ok=True)
-    (config.WAKE / f"{args.name}.wake").touch()
+    wake.send(args.name, "instruction")
     return 0
 
 
@@ -331,7 +332,9 @@ def cmd_codex_stop(args) -> int:
     try:
         from .agents import codex
 
-        decision = codex.stop_decision(payload, settings)
+        # stdout is a protocol channel, including when optional connectors fail.
+        with contextlib.redirect_stdout(sys.stderr):
+            decision = codex.stop_decision(payload, settings)
     except Exception:  # noqa: BLE001
         decision = {}
     print(json.dumps(decision))
@@ -424,7 +427,14 @@ def main(argv=None) -> int:
     ho.set_defaults(fn=cmd_hosts)
 
     args = ap.parse_args(argv)
-    return args.fn(args)
+    for _ in range(5):
+        try:
+            return args.fn(args)
+        except registry.ConflictError:
+            # Re-read and reapply operator commands against the latest state.
+            continue
+    print("claude-pilot: record kept changing; command was not applied", file=sys.stderr)
+    return 3
 
 
 if __name__ == "__main__":

@@ -73,7 +73,8 @@ class Handler(BaseHTTPRequestHandler):
 
             if payload.get("hook_event_name") == "Stop" and payload.get("_agent") != "codex":
                 host = self.headers.get("X-Pilot-Host") or payload.get("_host") or ""
-                self._wake_matching(payload.get("cwd") or "", payload["_received_at"], host)
+                self._wake_matching(payload.get("cwd") or "", payload["_received_at"],
+                                    host, payload.get("session_id") or "")
 
             self.send_response(204)
             self.end_headers()
@@ -82,14 +83,14 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             print(f"hookd error: {type(exc).__name__}: {exc}", file=sys.stderr)
 
-    def _wake_matching(self, cwd: str, received_at: str, host: str) -> None:
+    def _wake_matching(self, cwd: str, received_at: str, host: str, session_id: str = "") -> None:
         """Drop a wake marker for every active record whose cwd and host match.
 
         `host` comes from the `X-Pilot-Host` request header or the payload's
         `_host` field, defaulting to "" (local); a record only wakes for an
         event carrying the same host it was enrolled under.
         """
-        from claude_pilot import registry
+        from claude_pilot import registry, wake
 
         if not cwd:
             return
@@ -98,10 +99,13 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             if rec.get("host", "") != host:
                 continue
+            if rec.get("agent", "claude") != "claude":
+                continue
+            if session_id and rec.get("session_id") != session_id:
+                continue
             rec_cwd = (rec.get("cwd") or "").rstrip("/")
             if rec_cwd and (cwd == rec_cwd or cwd.startswith(rec_cwd + "/")):
-                config.WAKE.mkdir(parents=True, exist_ok=True)
-                (config.WAKE / f"{rec['name']}.wake").write_text(received_at)
+                wake.send(rec["name"], "stop", session_id)
 
     def do_GET(self):  # noqa: N802
         if self.path == "/health":

@@ -111,3 +111,67 @@ def test_resume_argv_permission_mode_output_format_model(tmp_path):
     assert reply == "ok reply"
     logged = log.read_text()
     assert "-r sess-1 -p do it --permission-mode bypassPermissions --output-format text --model some-model" in logged
+
+
+def test_remote_transcript_reads_expand_home_with_quoted_paths(tmp_path, monkeypatch):
+    settings = _settings(_fake_ssh(tmp_path))
+    remote_home = tmp_path / "remote home with 'quote'"
+    monkeypatch.setenv("HOME", str(remote_home))
+    cwd = "/remote/project with spaces"
+    sid = "11111111-1111-1111-1111-111111111111"
+    directory = remote_home / ".claude/projects" / claude_agent.sessions.transcript_slug(cwd)
+    directory.mkdir(parents=True)
+    text = "remote assistant response " * 20
+    (directory / f"{sid}.jsonl").write_text(json.dumps({"type": "assistant", "message": {
+        "content": [{"type": "text", "text": text}]}}) + "\n")
+    assert claude_agent.last_assistant_text(cwd, sid, "h1", settings) == text
+    assert claude_agent.estimate_tokens(cwd, sid, "h1", settings) == len(text) // 4
+    assert claude_agent.last_assistant_text(cwd, "missing", "h1", settings) == ""
+
+
+def test_compaction_creates_and_discovers_session_on_execution_host(tmp_path, monkeypatch):
+    import sys
+    from claude_pilot import driver
+
+    remote_home = tmp_path / "remote home"
+    remote_home.mkdir()
+    monkeypatch.setenv("HOME", str(remote_home))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-reach-agent")
+    work = tmp_path / "remote work"
+    work.mkdir()
+    old_sid = "11111111-1111-1111-1111-111111111111"
+    new_sid = "22222222-2222-2222-2222-222222222222"
+    transcript_dir = remote_home / ".claude/projects" / claude_agent.sessions.transcript_slug(str(work))
+    _write_transcript(transcript_dir, old_sid)
+    script = tmp_path / "remote-claude"
+    script.write_text(
+        f"#!{sys.executable}\n"
+        "import os,sys,pathlib,json\n"
+        "assert os.environ['PILOT_FAKE_REMOTE']=='1'\n"
+        "assert 'ANTHROPIC_API_KEY' not in os.environ\n"
+        "assert os.environ['PILOT_HEADLESS']=='1'\n"
+        "if '-r' in sys.argv:\n"
+        "    print('detailed handoff ' * 30)\n"
+        "else:\n"
+        f"    pathlib.Path({str(transcript_dir / (new_sid + '.jsonl'))!r}).write_text('{{}}\\n')\n"
+        "    print('continued remotely')\n"
+    )
+    script.chmod(0o755)
+    settings = _settings(_fake_ssh(tmp_path))
+    settings["hosts"]["h1"]["claude"] = str(script)
+    settings["agent_command"] = "/no/controller/agent"
+    monkeypatch.setattr(claude_agent.sessions, "transcript_ids",
+                        lambda *a: (_ for _ in ()).throw(AssertionError("used local discovery")))
+    rec = dict(host="h1", agent="claude", cwd=str(work), session_id=old_sid, goal="finish")
+    assert driver.compact(rec, settings)
+    assert rec["host"] == "h1"
+    assert rec["session_id"] == new_sid
+    assert rec["previous_sessions"] == [old_sid]
+
+
+def test_fresh_start_refuses_ambiguous_session_discovery(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    snapshots = iter([["old"], ["old", "new", "unrelated"]])
+    monkeypatch.setattr(claude_agent, "transcript_ids", lambda *a: next(snapshots))
+    monkeypatch.setattr(claude_agent.transport, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+    assert claude_agent.start({"cwd": str(tmp_path)}, "continue", {}) is None

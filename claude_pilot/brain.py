@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 
 TIMEOUT = 30
 
@@ -24,7 +25,7 @@ def fetch_context(rec: dict, settings: dict) -> str:
                            text=True, timeout=TIMEOUT)
         return (r.stdout or "").strip()
     except Exception as exc:  # noqa: BLE001
-        print(f"  context_command failed: {type(exc).__name__}: {exc}")
+        print(f"  context_command failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return ""
 
 
@@ -37,7 +38,7 @@ def run_judge(rec: dict, reply: str, settings: dict, phase: str = "after") -> di
     like a supervisor's verdict file, can ignore the distinction.
 
     Anything other than a JSON object with a verdict of ok or pause counts as
-    ok and is reported on stdout, so a misbehaving judge can only ever fail
+    ok and is reported on stderr, so a misbehaving judge can only ever fail
     to pause, never break a tick.
     """
     cmd = settings.get("judge_command") or ""
@@ -49,7 +50,7 @@ def run_judge(rec: dict, reply: str, settings: dict, phase: str = "after") -> di
         data = json.loads((r.stdout or "").strip() or "{}")
         if isinstance(data, dict) and data.get("verdict") in ("ok", "pause"):
             return data
-        print("  judge_command: invalid output, treating as ok")
+        print("  judge_command: invalid output, treating as ok", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001
-        print(f"  judge_command failed: {type(exc).__name__}: {exc}")
+        print(f"  judge_command failed: {type(exc).__name__}: {exc}", file=sys.stderr)
     return {"verdict": "ok"}

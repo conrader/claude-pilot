@@ -8,7 +8,6 @@ that walks the equivalent ~/.claude/projects/<slug> tree on the far side.
 from __future__ import annotations
 
 import json
-import re
 
 from .. import config, sessions, transport
 
@@ -28,10 +27,10 @@ _LIST_SCRIPT = (
 )
 
 
-def _remote_rows(cwd: str, host: str) -> list[tuple[float, str]]:
+def _remote_rows(cwd: str, host: str, settings: dict | None = None) -> list[tuple[float, str]]:
     """(mtime, path-relative-to-project-dir) for every transcript remotely."""
     slug = sessions.transcript_slug(cwd)
-    r = transport.python_on(host, _LIST_SCRIPT, slug, timeout=60)
+    r = transport.python_on(host, _LIST_SCRIPT, slug, timeout=60, settings=settings)
     if r.returncode != 0 or not (r.stdout or "").strip():
         return []
     try:
@@ -41,11 +40,11 @@ def _remote_rows(cwd: str, host: str) -> list[tuple[float, str]]:
     return [(float(m), p) for m, p in rows]
 
 
-def transcript_ids(cwd: str, host: str = "") -> list[str]:
+def transcript_ids(cwd: str, host: str = "", settings: dict | None = None) -> list[str]:
     """Session ids with a transcript file for `cwd`, newest first."""
     if not host:
         return sessions.transcript_ids(cwd)
-    rows = [(m, p) for m, p in _remote_rows(cwd, host) if "/" not in p]
+    rows = [(m, p) for m, p in _remote_rows(cwd, host, settings) if "/" not in p]
     rows.sort(key=lambda t: t[0], reverse=True)
     out = []
     for _, p in rows:
@@ -106,13 +105,8 @@ def _argv(settings: dict, claude_bin: str, tail: list[str]) -> list[str]:
 def _last_assistant_text_remote(
     cwd: str, session_id: str, host: str, settings: dict | None = None, max_chars: int = 4000
 ) -> str:
-    slug = sessions.transcript_slug(cwd)
-    path = f"~/.claude/projects/{slug}/{session_id}.jsonl"
-    r = transport.run(host, ["cat", path], timeout=60, settings=settings)
-    if r.returncode != 0:
-        return ""
     last = ""
-    for line in (r.stdout or "").splitlines():
+    for line in _read_remote_transcript(cwd, session_id, host, settings).splitlines():
         try:
             d = json.loads(line)
         except json.JSONDecodeError:
@@ -130,6 +124,15 @@ def _last_assistant_text_remote(
     return last[:max_chars]
 
 
+def _read_remote_transcript(cwd: str, session_id: str, host: str,
+                            settings: dict | None = None) -> str:
+    slug = sessions.transcript_slug(cwd)
+    path = f"~/.claude/projects/{slug}/{session_id}.jsonl"
+    script = "import pathlib,sys; print(pathlib.Path(sys.argv[1]).expanduser().read_text(errors='replace'), end='')"
+    r = transport.python_on(host, script, path, timeout=60, settings=settings)
+    return (r.stdout or "") if r.returncode == 0 else ""
+
+
 def last_assistant_text(cwd: str, session_id: str, host: str = "", settings: dict | None = None) -> str:
     """Final assistant text in the transcript, or "" if none is found."""
     if not host:
@@ -141,13 +144,8 @@ def estimate_tokens(cwd: str, session_id: str, host: str = "", settings: dict | 
     """Rough token count of a session's transcript."""
     if not host:
         return sessions.estimate_tokens(cwd, session_id)
-    slug = sessions.transcript_slug(cwd)
-    path = f"~/.claude/projects/{slug}/{session_id}.jsonl"
-    r = transport.run(host, ["cat", path], timeout=60, settings=settings)
-    if r.returncode != 0:
-        return 0
     n = 0
-    for line in (r.stdout or "").splitlines():
+    for line in _read_remote_transcript(cwd, session_id, host, settings).splitlines():
         try:
             d = json.loads(line)
         except json.JSONDecodeError:
@@ -170,13 +168,33 @@ def estimate_tokens(cwd: str, session_id: str, host: str = "", settings: dict | 
     return n // 4
 
 
+def _binary(host: str, settings: dict) -> str:
+    if host:
+        return config.host_config(host, settings).get("claude", "claude")
+    return settings.get("agent_command", "claude")
+
+
+def start(rec: dict, opening: str, settings: dict) -> str | None:
+    """Start and identify a fresh session on the pilot's execution host.
+
+    Only accept a newly created transcript. If concurrent sessions make the
+    result ambiguous, keep the original pilot reference.
+    """
+    host = rec.get("host") or ""
+    before = set(transcript_ids(rec["cwd"], host, settings))
+    argv = _argv(settings, _binary(host, settings), ["-p", opening])
+    r = transport.run(host, argv, cwd=rec["cwd"],
+                      timeout=settings.get("resume_timeout_s", 3600), settings=settings)
+    if r.returncode != 0:
+        return None
+    created = set(transcript_ids(rec["cwd"], host, settings)) - before
+    return created.pop() if len(created) == 1 else None
+
+
 def resume(rec: dict, instruction: str, settings: dict) -> tuple[bool, str]:
     """Resume the piloted Claude session headlessly. Returns (ok, reply)."""
     host = rec.get("host", "") or ""
-    if host:
-        claude_bin = config.host_config(host, settings).get("claude", "claude")
-    else:
-        claude_bin = settings.get("agent_command", "claude")
+    claude_bin = _binary(host, settings)
     argv = _argv(settings, claude_bin, ["-r", rec["session_id"], "-p", instruction])
     timeout = settings.get("resume_timeout_s", 3600)
     try:

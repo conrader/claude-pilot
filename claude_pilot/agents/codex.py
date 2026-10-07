@@ -21,16 +21,18 @@ import datetime
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 
 from .. import brain, instruction, notify, registry, transport
+from . import desktop_probe
 
 UUID_RX = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
 )
 
 _SCAN_SCRIPT = """import json,pathlib,sys
-cwd=sys.argv[1]
+cwd=str(pathlib.Path(sys.argv[1]).resolve())
 root=pathlib.Path(sys.argv[2]).expanduser() if len(sys.argv) > 2 and sys.argv[2] else (pathlib.Path.home()/'.codex'/'sessions')
 out=[]
 for p in (root.rglob('*.jsonl') if root.exists() else []):
@@ -39,6 +41,9 @@ for p in (root.rglob('*.jsonl') if root.exists() else []):
             first=json.loads(next(fh))
         payload=first.get('payload') or {}
         pcwd=payload.get('cwd') or ''
+        if not pcwd:
+            continue
+        pcwd=str(pathlib.Path(pcwd).resolve())
         sid=payload.get('session_id') or payload.get('id') or ''
         if pcwd==cwd or pcwd.startswith(cwd.rstrip('/')+'/'):
             out.append((p.stat().st_mtime,sid))
@@ -55,6 +60,72 @@ root=pathlib.Path(sys.argv[2]).expanduser() if len(sys.argv) > 2 and sys.argv[2]
 m=[p.stat().st_mtime for p in (root.rglob('*'+sid+'*.jsonl') if root.exists() else [])]
 print(max(m) if m else '')
 """
+
+# Run the same lifecycle inspection on local and SSH execution hosts. A long
+# tool call can leave the rollout untouched for hours without ending its turn.
+_TURN_SCRIPT = """import json,pathlib,sys
+sid=sys.argv[1]
+root=pathlib.Path(sys.argv[2]).expanduser() if sys.argv[2] else pathlib.Path.home()/'.codex'/'sessions'
+files=list(root.rglob('*'+sid+'*.jsonl')) if root.exists() else []
+active=None
+turn_id=None
+if files:
+    with max(files,key=lambda p:p.stat().st_mtime).open(errors='replace') as fh:
+        for line in fh:
+            try:
+                event=json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event,dict) or event.get('type')!='event_msg':
+                continue
+            payload=event.get('payload') or {}
+            kind=payload.get('type')
+            if kind=='task_started':
+                active=True
+                turn_id=payload.get('turn_id')
+            elif kind in ('task_complete','turn_aborted'):
+                if not turn_id or not payload.get('turn_id') or payload['turn_id']==turn_id:
+                    active=False
+print(json.dumps(active))
+"""
+
+
+def turn_in_progress(cwd: str, session_id: str | None, host: str) -> bool | None:
+    """An explicit open turn outranks wake markers and transcript age.
+
+    None means an older/missing rollout has no lifecycle evidence. Inspection
+    failures defer the tick, rather than risking a second client on a live turn.
+    """
+    if not session_id:
+        return None
+    desktop = desktop_info(cwd, session_id, host)
+    if desktop.get("active") is not None:
+        return desktop["active"]
+    root = str(_sessions_root()) if not host else ""
+    try:
+        r = transport.python_on(host, _TURN_SCRIPT, session_id, root, timeout=60)
+        if r.returncode == 0:
+            value = json.loads(r.stdout)
+            if value is None or isinstance(value, bool):
+                return value
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return True
+
+
+def desktop_info(cwd: str, session_id: str, host: str) -> dict:
+    if not host:
+        return desktop_probe.probe(cwd, session_id, str(_sessions_root().parent))
+    try:
+        script = Path(desktop_probe.__file__).read_text()
+        r = transport.python_on(host, script, cwd, session_id, "", timeout=60)
+        if r.returncode == 0:
+            result = json.loads(r.stdout)
+            if isinstance(result, dict):
+                return result
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return {"active": True}  # Unknown remote activity: defer rather than race.
 
 
 def _sessions_root() -> Path:
@@ -94,18 +165,25 @@ def newest_transcript_mtime(cwd: str, session_id: str | None, host: str) -> floa
         r = transport.python_on(host, _MTIME_SCRIPT, session_id, "", timeout=120)
         out = (r.stdout or "").strip()
         try:
-            return float(out) if out else None
+            mtime = float(out) if out else None
         except ValueError:
-            return None
-    root = _sessions_root()
-    if not root.exists():
-        return None
-    mtimes = [f.stat().st_mtime for f in root.rglob(f"*{session_id}*.jsonl") if f.exists()]
+            mtime = None
+        mtimes = [mtime] if mtime is not None else []
+    else:
+        root = _sessions_root()
+        mtimes = [f.stat().st_mtime for f in root.rglob(f"*{session_id}*.jsonl") if f.exists()]
+    desktop = desktop_info(cwd, session_id, host)
+    if desktop.get("mtime") is not None:
+        mtimes.append(desktop["mtime"])
+    if desktop.get("active"):
+        mtimes.append(registry.now().timestamp())
     return max(mtimes) if mtimes else None
 
 
 def transcript_is_gone(cwd: str, session_id: str, host: str) -> bool:
     """Whether no rollout file for this session id exists any more."""
+    if desktop_info(cwd, session_id, host).get("mode") == "paginated":
+        return False
     if not host:
         root = _sessions_root()
         return not any(root.rglob(f"*{session_id}*.jsonl")) if root.exists() else True
@@ -157,13 +235,21 @@ def resume(rec: dict, instruction_text: str, settings: dict) -> tuple[bool, str]
     fine over SSH); the macOS keychain caveat that blocks it there is a
     README note, not a refusal enforced here.
     """
-    argv = _resume_argv(rec, instruction_text, settings)
     timeout = settings.get("resume_timeout_s", 3600)
     host = rec.get("host") or ""
+    desktop = desktop_info(rec["cwd"], rec["session_id"], host)
+    if desktop.get("active"):
+        return False, "background agent has an unfinished Codex turn; continuation deferred"
+    paginated = desktop.get("mode") == "paginated"
+    argv = ([settings.get("codex_command", "codex"), "queue", "--thread", rec["session_id"],
+             "--message", instruction_text] if paginated else _resume_argv(rec, instruction_text, settings))
     try:
         r = transport.run(host, argv, cwd=rec["cwd"], timeout=timeout, settings=settings)
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
+    if paginated and r.returncode == 0:
+        rec["_queued_continuation"] = {"after_turn_id": desktop.get("turn_id"), "goal": rec.get("goal")}
+        return True, "Continuation queued into the existing desktop chat; task outcome remains unverified."
     reply = _last_agent_message(r.stdout or "")
     if not reply:
         reply = (r.stderr or r.stdout or "").strip()
@@ -238,6 +324,10 @@ def _stop_decision(payload: dict, settings: dict) -> dict:
         return {}
 
     name = rec["name"]
+    # The next Stop is evidence that the preceding continuation was delivered.
+    # If the bridge failed or timed out, messages stay pending for a retry.
+    registry.inbox_ack(name, rec.pop("_inbox_delivery", []))
+    registry.inbox_ack(name, rec.pop("_queued_continuation", {}).get("inbox_ids", []))
     message = payload.get("last_assistant_message") or ""
     rec.setdefault("history", []).append({
         "at": registry.iso(registry.now()),
@@ -248,18 +338,19 @@ def _stop_decision(payload: dict, settings: dict) -> dict:
 
     def _finish(state: str, note: str = "") -> dict:
         rec["state"] = state
+        registry.save(rec)
         if note:
             notify.send(note)
-        registry.save(rec)
         return {}
 
-    if re.search(r"(?m)^\s*" + re.escape(instruction.DONE) + r"\s*(?:$|\n)", message):
+    outcome = instruction.outcome(message)
+    if outcome == "done":
         return _finish(
             "done",
             f"pilot {name} DONE after {rec['ticks']} continuation(s)\n{message[:600]}",
         )
 
-    if re.search(r"(?m)^\s*" + re.escape(instruction.BLOCKED) + r"\b", message):
+    if outcome == "blocked":
         return _finish(
             "blocked",
             f"pilot {name} BLOCKED, needs you\n{message[:600]}",
@@ -302,7 +393,8 @@ def _stop_decision(payload: dict, settings: dict) -> dict:
         )
 
     rec["ticks"] = rec.get("ticks", 0) + 1
-    queued = registry.inbox_drain(name)
+    queued = registry.inbox_pending(name)
     reason = stop_instruction(rec, queued, brain.fetch_context(rec, settings))
+    rec["_inbox_delivery"] = [q["id"] for q in queued]
     registry.save(rec)
     return {"decision": "block", "reason": reason}

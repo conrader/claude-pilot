@@ -16,4 +16,6 @@ def test_judge_pause_and_garbage(capsys):
     assert brain.run_judge({}, "r", {"judge_command": "echo '{\"verdict\": \"pause\", \"reason\": \"off goal\"}'"}) == {"verdict": "pause", "reason": "off goal"}
     assert brain.run_judge({}, "r", {"judge_command": "echo not-json"}) == {"verdict": "ok"}
     assert brain.run_judge({}, "r", {"judge_command": "exit 3"}) == {"verdict": "ok"}
-    assert "treating as ok" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "treating as ok" in captured.err

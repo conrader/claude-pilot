@@ -217,6 +217,8 @@ Pilots can drive [Codex](https://github.com/openai/codex) sessions as well as Cl
 
 Claude and Codex pilots share everything else: bounds, inbox, `tell`, `status`, notifications, the judge and the context connector. What Codex pilots do not get is a transcript-size handoff; Codex manages its own context.
 
+Codex turn-start and turn-end events take priority over transcript age: a long tool call does not make an unfinished turn idle. For desktop sessions with paginated history, the controller reads the local history databases without modifying them and uses `codex queue` after the current turn has ended. Only one continuation may remain outstanding. If desktop activity cannot be read, the tick waits. A rollout with an unmatched turn-start event also waits; inspect an interrupted session before resuming it manually.
+
 ## Plugging in your own second brain
 
 The registry is a directory of JSON files and every command is scriptable, so an external system can already watch and steer pilots. Two optional settings let it reach *into* the loop:
@@ -250,11 +252,13 @@ Each tick examines enrolled pilots in order. Before resuming one, it checks its 
 
 | Signal | What the loop does |
 | --- | --- |
-| Interactive Claude session in the project | Wait, even if a wake marker exists. |
-| Fresh transcript activity without a wake marker | Wait; the default quiet window is 8 minutes, including subagent transcripts. |
-| Stop hook or `tell` wake marker | Bypass the quiet-window and idle-backoff checks, while still honoring the interactive guard and bounds. |
+| Interactive Claude or Codex session in the project | Wait, even if a wake marker exists. |
+| Unfinished Codex turn or outstanding desktop continuation | Wait, regardless of transcript age or wake markers. |
+| Fresh transcript activity | Wait; the default quiet window is 8 minutes, including subagent transcripts. |
+| Stop hook for the enrolled Claude session | Bypass the quiet-window and idle-backoff checks, while still honoring the interactive guard and bounds. |
+| `tell` wake marker | Check promptly, but wait for a busy session; pending input bypasses idle backoff. |
 | Quiet session with no new input | Resume on the first eligible idle tick, then back off; default `idle_backoff` is 6. |
-| Failed resume after draining instructions | Put those instructions back in the inbox. |
+| Failed or interrupted delivery | Keep instructions pending until delivery is acknowledged. |
 
 ### A fresh session, with a handoff
 
@@ -325,7 +329,7 @@ By default, `start` requires a project directory with `.git` or a recognized man
 - `revive` preserves the tick counter, except for an exhausted pilot, which gets a fresh budget. Changing a goal preserves the existing bounds.
 - `--persistent` renews elapsed deadlines and resets exhausted tick counters. It can still finish, block, or error; it does not override `stop`.
 - Recognized usage-limit errors are retried after at least 60 minutes. That recovery can extend an elapsed deadline, but does not clear an exhausted tick counter.
-- `stop` updates the record; it is not a process-kill command. Let an in-flight tick finish, then confirm the state with `status`.
+- `stop` updates the record; it is not a process-kill command. An in-flight tick cannot overwrite that stop or a newer goal. The tick budget is reserved before launching the agent.
 
 </details>
 
@@ -416,9 +420,9 @@ journalctl --user \
 
 **Transcript activity is the liveness signal.** Without a wake marker, recent writes to the session or its subagent transcripts mean the loop leaves it alone. A Stop hook accelerates scheduling; a human's interactive terminal still takes priority.
 
-**Scheduling must survive duplicate triggers.** A file lock serializes ticks. Wake markers are consumed before state checks, and orphaned markers are removed so a path watcher cannot restart forever.
+**Scheduling must survive duplicate triggers.** A file lock serializes ticks. Record writes use atomic replacement and revision checks so stale tick results cannot overwrite operator commands. Wake markers carry their reason and session ID, are consumed before state checks, and orphaned markers are removed so a path watcher cannot restart forever.
 
-**Operator input must survive a failed turn.** Drained inbox messages are put back if the resume fails. Idle backoff never delays a wake marker or pending instruction, though the other guards still apply.
+**Operator input must survive a failed turn.** Inbox appends and acknowledgments share a lock. Instructions have durable IDs and remain pending through a failed or interrupted delivery. Headless turns acknowledge successful execution; Codex hooks acknowledge the preceding continuation on the next Stop, and desktop queues wait for a subsequent turn. Delivery is at least once: a crash after execution but before acknowledgment can cause a retry. Pending instructions bypass idle backoff while respecting activity checks.
 
 **The goal defines the work.** Each resume asks the model to stay in scope, finish verified and committed steps, read state back, and report `PILOT-DONE` only for completed work. Those prompts live in [instruction.py](claude_pilot/instruction.py).
 
@@ -429,7 +433,7 @@ Each instance manages Claude Code sessions on its execution host; [multiple host
 From your activated virtual environment in the checkout:
 
 ```bash
-python -m pip install -e . pytest
+python -m pip install -e '.[test]'
 python -m pytest -q
 ```
 

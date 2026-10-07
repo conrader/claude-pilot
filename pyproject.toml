@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-pilot"
-version = "0.2.1"
+version = "0.2.2"
 description = "Keep a Claude Code session working toward a goal while you are away: Stop-hook wakeups, bounded ticks, handoffs."
 readme = "README.md"
 license = {text = "MIT"}
@@ -16,6 +16,9 @@ classifiers = ["Programming Language :: Python :: 3", "License :: OSI Approved :
 [project.scripts]
 claude-pilot = "claude_pilot.cli:main"
 claude-pilot-hookd = "claude_pilot.hookd:main"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
 
 [project.urls]
 Homepage = "https://github.com/conrader/claude-pilot"
